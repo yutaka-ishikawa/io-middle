@@ -1,0 +1,10 @@
+CC = fccpx
+LD = ld
+CFLAGS = -Wall -O2 -g -Xg
+CFLAGS_SHARED= -Wall -O2 -g -fpic -Xg
+LDFLAGS_SHARED= -shared
+
+INCLUDES =
+LDFLAGS =
+MPICC = mpiccpx
+#MPIEXEC = mpiexec

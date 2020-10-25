@@ -1,0 +1,12 @@
+CC = gcc
+LD = ld
+#CFLAGS =  -Wall -O2 -g
+#CFLAGS_SHARED= -Wall -O2 -g -fpic $(FJCFLAGS)
+CFLAGS = -Wall -g
+CFLAGS_SHARED= -Wall -g -fpic $(FJCFLAGS)
+LDFLAGS_SHARED= -shared
+
+INCLUDES =
+LDFLAGS =
+MPICC = /usr/bin/mpicc
+MPIEXEC = /usr/bin/mpiexec
