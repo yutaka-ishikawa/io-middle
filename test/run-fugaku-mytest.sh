@@ -2,14 +2,15 @@
 #------ pjsub option --------#
 #PJM -N "IO-MIDDLE" # jobname
 #PJM -S		# output statistics
-#PJM --spath "results/%n.%j.stat"
-#PJM -o "results/%n.%j.out"
-#PJM -e "results/%n.%j.err"
+#PJM --spath "results-middle/%n.%j.stat"
+#PJM -o "results-middle/%n.%j.out"
+#PJM -e "results-middle/%n.%j.err"
 #	PJM -L "node=2"
 #	PJM -L "node=16"
 #	PJM -L "node=64"
 #	PJM -L "node=96"
-#PJM -L "node=384"
+#	PJM -L "node=384"
+#PJM -L "node=768"
 #PJM --mpi "max-proc-per-node=1"
 #PJM -L "elapse=00:00:20"
 #PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-huge1,jobenv=linux"
