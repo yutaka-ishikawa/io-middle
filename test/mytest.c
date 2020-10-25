@@ -172,7 +172,7 @@ main(int argc, char **argv)
 	       " proc write size: %f kB\n"
 	       "total write size: %f MiB\n"
 	       "              hz: %ld\n"
-	       "           debug: %d\n",
+	       "           debug: %d\n"
 	       "       file name: %s\n",
 	       nprocs, strsize,
 	       (float)bufsiz/1024.0,
