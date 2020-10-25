@@ -8,12 +8,16 @@
  */
 #include "io_middle.h"
 #include <mpi.h>
+#include <limits.h>
 
 #define Myrank 	(_inf.rank)
 #define Nprocs 	(_inf.nprocs)
 
 static struct ioinfo _inf;
-char	*dont_path[] = {
+static char	care_path[PATH_MAX];
+
+#if 0
+static char	*dont_path[] = {
     "/",
     "/mnt1/",
     "linux-vdso",
@@ -27,6 +31,7 @@ char	*dont_path[] = {
     "log",
     0
 };
+#endif
 
 static int
 dbgprintf(const char *fmt, ...)
@@ -66,8 +71,14 @@ data_show(const char *msg, int *ip, int len, int idx)
 static int
 is_dont_care_path(const char *path)
 {
+    if (care_path[0] && !strncmp(care_path, path, strlen(care_path))) {
+	return 0;
+    } else {
+	return 1;
+    }
+#if 0
     int rc = 0;
-    int	i;
+    int i;
     for (i = 0; dont_path[i] != 0; i++) {
 	int len = strlen(dont_path[i]);
 	if (!strcmp(path, dont_path[i]) /* exact matching */
@@ -76,6 +87,7 @@ is_dont_care_path(const char *path)
 	}
     }
     return rc;
+#endif
 }
 
 static void
@@ -166,7 +178,7 @@ ext:
 size_t
 buf_flush(fdinfo *info)
 {
-    size_t	cc = -1;
+    size_t	cc = -1ULL;
     int	i;
     size_t	strsize = info->strsize;
     /*
@@ -218,7 +230,7 @@ buf_flush(fdinfo *info)
 	    }
 	}
 	cc = pwrite(info->iofd, info->sbuf, wsize, filpos);
-	if (cc < wsize) { cc = -1; goto ext; }
+	if (cc < wsize) { cc = -1ULL; goto ext; }
     } else {
 	DEBUG(DLEVEL_BUFMGR) {
 	    dbgprintf("No needs to write\n", Myrank);
@@ -248,7 +260,7 @@ _iomiddle_creat(const char* path, mode_t mode)
 	fd =  __real_creat(path, mode);
 	return fd;
     }
-    DEBUG(DLEVEL_HIJACKED) {
+    DEBUG(DLEVEL_HIJACKED|DLEVEL_CONFIRM) {
 	fprintf(stderr, "%s DO-CARE path=%s\n", __func__, path);
     }
     fd =  __real_creat(path, mode);
@@ -288,7 +300,7 @@ _iomiddle_open(const char *path, int flags, ...)
 	_inf.fdinfo[fd].notfirst = 1;
 	_inf.fdinfo[fd].dntcare = 1;
     } else {
-	DEBUG(DLEVEL_HIJACKED) {
+	DEBUG(DLEVEL_HIJACKED|DLEVEL_CONFIRM) {
 	    fprintf(stderr, "[%d] DO-CARE file fd(%d) path(%s)\n",
 		    Myrank, fd, path);
 	}
@@ -411,7 +423,7 @@ _iomiddle_read(int fd, void *buf, size_t len)
 			    i, MPI_COMM_WORLD));
 	    off += info->strsize;
 	}
-	if (cc < 0) {
+	if ((int64_t) cc < 0) {
 	    rc = cc;
 	    goto ext;
 	} else if (cc < _inf.fdinfo[fd].bufsize) {
@@ -521,6 +533,16 @@ _myhijack_init()
     cp = getenv("IOMIDDLE_DEBUG");
     if (cp && atoi(cp) > 0) {
 	_inf.debug = atoi(cp);
+    }
+    cp = getenv("IOMIDDLE_CARE_PATH");
+    if (cp) {
+	strcpy(care_path, cp);
+    } else {
+	printf("IOMIDDLE_CARE_PATH must be specified\n");
+	exit(-1);
+    }
+    DEBUG(DLEVEL_CONFIRM) {
+	printf("IOMIDDLE_CARE_PATH = %s\n", care_path);
     }
     DEBUG(DLEVEL_ALL) {
 	printf("%s: init is called. debug(%d)\n", __func__, _inf.debug);

@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdint.h>
 #define __USE_GNU
 #include <dlfcn.h>
 #include <mpi.h>
@@ -16,6 +17,7 @@
 #define DLEVEL_ALL	1
 #define DLEVEL_HIJACKED	2
 #define DLEVEL_BUFMGR	4
+#define DLEVEL_CONFIRM	8
 
 #define MODE_UNKNOWN	0
 #define MODE_READ	1
