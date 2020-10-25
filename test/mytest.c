@@ -81,7 +81,7 @@ do_write(char *fnm, off64_t offset, void *bufp, size_t bufsiz)
     size_t	sz;
     off64_t	pos;
 
-    if ((fd = open(fnm, O_CREAT|O_WRONLY, 0644)) < 0) {
+    if ((fd = open(fnm, O_CREAT|O_WRONLY|O_TRUNC, 0644)) < 0) {
 	fprintf(stderr, "Cannot open file %s\n", fnm);
 	exit(-1);
     }
@@ -173,9 +173,10 @@ main(int argc, char **argv)
 	       "total write size: %f MiB\n"
 	       "              hz: %ld\n"
 	       "           debug: %d\n",
+	       "       file name: %s\n",
 	       nprocs, strsize,
 	       (float)bufsiz/1024.0,
-	       tot_fsize, timer_hz, dflag);
+	       tot_fsize, timer_hz, dflag, fnm);
     }
     if (rwflag & DO_WRITE) {
 	timer_st[0] = tick_time();
