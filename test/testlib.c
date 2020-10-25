@@ -5,7 +5,7 @@ off64_t	strsize = DEFAULT_STRSIZE;
 int	strcnt;
 size_t	len = DEFAULT_LENGTH;
 size_t	bufsiz;
-int	nprocs, myrank, dflag, rwflag, vflag;
+int	nprocs, myrank, dflag, vflag, rwflag, tflag;
 int	verbose;
 
 char	fname[1024];
@@ -15,35 +15,41 @@ test_parse_args(int argc, char **argv)
 {
     int	opt;
     rwflag = DO_WRITE;
-    while ((opt = getopt(argc, argv, "rvdVWf:s:c:l:")) != -1) {
+    while ((opt = getopt(argc, argv, "drtvwVWc:f:l:s:")) != -1) {
 	switch(opt) {
-	case 'V':
+	case 'd': /* debug mode */
+	    setenv("IOMIDDLE_DEBUG", "1", 1);
+	    dflag = 1;
+	    break;
+	case 'V': /* verbose mode */
 	    verbose = 1;
 	    break;
-	case 'W':
+	case 'W': /* write and read, default write */
 	    rwflag = DO_WRITE|DO_READ;
 	    break;
-	case 'r':
+	case 'w': /* write, default write */
+	    rwflag = DO_WRITE;
+	    break;
+	case 'r': /* read, default write */
 	    rwflag = DO_READ;
 	    break;
-	case 'v':
+	case 't': /* truncate or not */
+	    tflag = 1;
+	    break;
+	case 'v': /* verify or not */
 	    vflag = 1;
-	    break;
-	case 'f': /* file name */
-	    strcpy(fname, optarg);
-	    break;
-	case 's': /* stripe size */
-	    strsize = atoi(optarg);
 	    break;
 	case 'c': /* stripe count == nprocs */
 	    strcnt = atoi(optarg);
 	    break;
-	case 'd':
-	    setenv("IOMIDDLE_DEBUG", "1", 1);
-	    dflag = 1;
+	case 'f': /* file name */
+	    strcpy(fname, optarg);
 	    break;
-	case 'l':
+	case 'l': /* count of write/read */
 	    len = atoll(optarg);
+	    break;
+	case 's': /* stripe size */
+	    strsize = atoi(optarg);
 	    break;
 	}
     }

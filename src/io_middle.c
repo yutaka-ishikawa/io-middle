@@ -1,10 +1,37 @@
 /*
+ * IO Middleware implementing a two phase I/O protocol
+ *		2020/10/25, yutaka.ishikawa@riken.jp
+ *
  * Assumptions:
- *	1) A file descriptor is always used for read or write operations,
+ *	1) A file descriptor is always used for read or write operation,
  *	   not combination of read and write.
  *	2) lseek is always issued for the next stripe.
+ *	3) read and write sizes are always the same length over all processes.
+ *	   This length is used for stripe size.
  * Captured system calls:
  *	creat, open, close, read, lseek64, write
+ * Shell environment:
+ *	IOMIDDLE_CARE_PATH 
+ *	   -- file path taken care by this middleware.
+ *	     The user must specify this variable.
+ *	IOMIDDLE_TRUNC
+ *	   -- if specify, enable global file truncation at the close time.
+ *	      Note that this behavior is different than POSIX,
+ *	      because procccesses independently close a file descriptor
+ *	      whose file pointer is local and differs than others in POSIX.
+ *	IOMIDDLE_DISABLE
+ *	   -- disable this middleware hooks.
+ *	IOMIDDLE_DEBUG
+ *	   -- debug messages are displayed.
+ *
+ * Usage:
+ *	$ cd ../src
+ *	$ (export LD_PRELOAD=../src/io_middle.so; \
+ *	   export IOMIDDLE_CARE_PATH=./results; \
+ *	   mpiexec -n 12 ./mytest -l 3 -f ./results/tdata-12)
+ *	Note that the LD_PRELOAD environment should not be set on your bash
+ *	   currently used.  If set, all commands/programs invoked on that bash 
+ *	   are contolled under this IO Middleware.
  */
 #include "io_middle.h"
 #include <mpi.h>
@@ -90,6 +117,42 @@ is_dont_care_path(const char *path)
 #endif
 }
 
+static inline void
+rank_init()
+{
+    if (Myrank < 0) {
+	MPI_Comm_size(MPI_COMM_WORLD, &Nprocs);
+	MPI_Comm_rank(MPI_COMM_WORLD, &Myrank);
+    }
+}
+
+static inline int
+info_flagcheck(int flags)
+{
+    rank_init();
+    return (Myrank ==0) ? flags : (flags & ~O_TRUNC);
+}
+
+/*
+ * flags and mode are values specified by arguments
+ */
+static void
+info_init(int fd, int flags, int mode)
+{
+    fdinfo	*info = &_inf.fdinfo[fd];
+
+    rank_init();
+    info->iofd   = fd;
+    info->bufpos = 0;
+    info->filpos = 0;
+    info->bufcount = 0;
+    info->iofd     = fd;
+    info->dntcare  = 0;
+    info->flags    = flags;
+    info->mode   = mode;
+    info->trunc = (((flags|mode) & O_TRUNC) == O_TRUNC);
+}
+
 static void
 buf_init(int fd, int strsize)
 {
@@ -124,10 +187,10 @@ dontcare_mode_check(int fd, int mode)
     if (_inf.fdinfo[fd].dntcare || _inf.fdinfo[fd].iofd == 0) {
 	return 1;
     }
-    if (_inf.fdinfo[fd].mode == MODE_UNKNOWN) {
-	_inf.fdinfo[fd].mode = mode;
+    if (_inf.fdinfo[fd].rwmode == MODE_UNKNOWN) {
+	_inf.fdinfo[fd].rwmode = mode;
     }
-    IOMIDDLE_IFERROR((_inf.fdinfo[fd].mode != mode), "%s",
+    IOMIDDLE_IFERROR((_inf.fdinfo[fd].rwmode != mode), "%s",
 		     "read and write issued\n");
     return 0;
 }
@@ -262,19 +325,15 @@ _iomiddle_creat(const char* path, mode_t mode)
     int	fd;
 
     if (is_dont_care_path(path)) {
-	fd =  __real_creat(path, mode);
+	fd = __real_creat(path, mode);
 	return fd;
     }
     DEBUG(DLEVEL_HIJACKED|DLEVEL_CONFIRM) {
 	fprintf(stderr, "%s DO-CARE path=%s\n", __func__, path);
     }
-    fd =  __real_creat(path, mode);
+    fd = __real_creat(path, mode);
     if (fd >= 0) {
-	_inf.fdinfo[fd].iofd = fd;
-	_inf.fdinfo[fd].bufpos = 0;
-	_inf.fdinfo[fd].filpos = 0;
-	_inf.fdinfo[fd].bufcount = 0;
-	_inf.fdinfo[fd].iofd = fd;
+	info_init(fd, 0, mode);
     }
     return fd;
 }
@@ -286,39 +345,35 @@ int
 _iomiddle_open(const char *path, int flags, ...)
 {
     int	fd;
+    int mode = 0;
+    int dont_care = is_dont_care_path(path);
 
     DEBUG(DLEVEL_ALL) {
 	fprintf(stderr, "[%d] %s path=%s\n", Myrank, __func__, path);
     }
     if (flags & O_CREAT) {
-	int mode;
         va_list arg;
         va_start(arg, flags);
         mode = va_arg(arg, int);
         va_end(arg);
-	fd =  __real_open(path, flags, mode);
+    }
+    if (dont_care) {
+	fd = __real_open(path, flags, mode);
     } else {
-	fd = __real_open(path, flags);
+	int umode  = info_flagcheck(mode);
+	int uflags = info_flagcheck(flags);
+	fd = __real_open(path, uflags, umode);
     }
     if (fd < 0) goto err;
-    if (is_dont_care_path(path)) {
+    if (dont_care) {
 	_inf.fdinfo[fd].notfirst = 1;
 	_inf.fdinfo[fd].dntcare = 1;
     } else {
 	DEBUG(DLEVEL_HIJACKED|DLEVEL_CONFIRM) {
-	    fprintf(stderr, "[%d] DO-CARE file fd(%d) path(%s)\n",
+	    fprintf(stderr, "[%d] open() DO-CARE file fd(%d) path(%s)\n",
 		    Myrank, fd, path);
 	}
-	if (Myrank < 0) {
-	    MPI_Comm_size(MPI_COMM_WORLD, &Nprocs);
-	    MPI_Comm_rank(MPI_COMM_WORLD, &Myrank);
-	}
-	_inf.fdinfo[fd].iofd = fd;
-	_inf.fdinfo[fd].bufpos = 0;
-	_inf.fdinfo[fd].filpos = 0;
-	_inf.fdinfo[fd].bufcount = 0;
-	_inf.fdinfo[fd].iofd = fd;
-	_inf.fdinfo[fd].dntcare = 0;
+	info_init(fd, flags, mode);
     }
 err:
     return fd;
@@ -331,21 +386,43 @@ int
 _iomiddle_close(int fd)
 {
     int	rc;
-
+    fdinfo	*info;
+    
     if (_inf.fdinfo[fd].dntcare || _inf.fdinfo[fd].iofd == 0) {
 	rc = __real_close(fd);
 	return rc;
     }
+    info =  &_inf.fdinfo[fd];
     DEBUG(DLEVEL_HIJACKED) { fprintf(stderr, "%s DO-CARE fd(%d)\n", __func__, fd); }
     if (_inf.fdinfo[fd].bufcount > 0) {
 	DEBUG(DLEVEL_BUFMGR) {
 	    dbgprintf("%s: bufcount(%d)\n", __func__, _inf.fdinfo[fd].bufcount);
 	}
-	rc = buf_flush(&_inf.fdinfo[fd]);
+	rc = buf_flush(info);
     }
-    rc = __real_close(fd);
-    _inf.fdinfo[fd].attrall = 0;
-    _inf.fdinfo[fd].iofd = -1;
+    if (_inf.reqtrunc && info->trunc) {
+	off64_t	filpos = info->filpos;
+	if (Myrank == 0) {
+	    /* Rank 0 only has created or opened this file with the O_TRUNC flag
+	     * if specified. */
+	    MPI_Reduce(&info->filpos, &filpos, 1, MPI_UNSIGNED_LONG_LONG,
+		       MPI_MAX, 0, MPI_COMM_WORLD);
+	    if (filpos != info->filpos) {
+		__real_lseek64(info->iofd, filpos, SEEK_SET);
+	    }
+	    rc = __real_close(fd);
+	} else {
+	    rc = __real_close(fd);
+	    MPI_Reduce(&info->filpos, &filpos, 1, MPI_UNSIGNED_LONG_LONG,
+		       MPI_MAX, 0, MPI_COMM_WORLD);
+	}
+    }
+    info->attrall = 0;
+    info->iofd = -1;
+    free(info->ubuf);
+    free(info->sbuf);
+    info->ubuf = 0;
+    info->sbuf = 0;
     return rc;
 }
 
@@ -376,7 +453,7 @@ _iomiddle_write(int fd, const void *buf, size_t len)
 		     "len(%ld) stripe size(%d)\n", len, info->strsize);
     memcpy(info->ubuf + info->bufpos, buf, len);
     info->bufpos += len; info->bufcount++;
-    info->filpos += len; /* filpos will be discarded ? */
+    info->filpos += len;
     DEBUG(DLEVEL_BUFMGR) {
 	dbgprintf("bufcount(%d) mybufcount(%d) len(%ld) "
 		  "info->strsize(%d)\n",
@@ -546,17 +623,15 @@ _myhijack_init()
 	printf("IOMIDDLE_CARE_PATH must be specified\n");
 	exit(-1);
     }
+    cp = getenv("IOMIDDLE_TRUNC");
+    if (cp && atoi(cp) > 0) {
+	_inf.reqtrunc = 1;
+    }
     DEBUG(DLEVEL_CONFIRM) {
 	printf("IOMIDDLE_CARE_PATH = %s\n", care_path);
     }
     DEBUG(DLEVEL_ALL) {
 	printf("%s: init is called. debug(%d)\n", __func__, _inf.debug);
-    }
-    cp = getenv("IO_MIDDLE_BUFCOUNT");
-    if (cp) {
-	_inf.mybufcount = atoi(cp);
-    } else {
-	_inf.mybufcount = 1;
     }
     getrlimit(RLIMIT_NOFILE, &rlim);
     Myrank = -1;

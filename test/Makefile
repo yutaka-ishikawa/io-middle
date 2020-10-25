@@ -16,16 +16,43 @@ run-test-x86-4r:
 	export LD_PRELOAD=../src/io_middle.so; \
 	$(MPIEXEC) -n 4 ./mytest -l 4 -r
 run-test-x86-3:
-	rm ./results/tdata-3; rm ./results-nomiddle/tdata-3
+	rm -f ./results/tdata-3; rm -f ./results-nomiddle/tdata-3
 	(export LD_PRELOAD=../src/io_middle.so; \
-	export IOMIDDLE_CARE_PATH=./results; \
+	 export IOMIDDLE_CARE_PATH=./results; \
 	$(MPIEXEC) -n 3 ./mytest -l 2 -f ./results/tdata-3)
 #
-	($(MPIEXEC) -n 3 ./mytest -l 2 -f ./results-nomiddle/tdata-3;)
+	($(MPIEXEC) -n 3 ./mytest -l 2 -f ./results-nomiddle/tdata-3)
+#
+run-test-x86-3-trunc:
+	($(MPIEXEC) -n 3 ./mytest -l 4 -f ./results/tdata-3)
+	(export LD_PRELOAD=../src/io_middle.so; \
+	 export IOMIDDLE_CARE_PATH=./results; \
+	$(MPIEXEC) -n 3 ./mytest -l 2 -t -f ./results/tdata-3)
+	ls -l ./results/tdata-3; echo "must be 282048"
+
+run-test-x86-12-trunc:
+	rm -f ./results/tdata-12; rm -f ./results-nomiddle/tdata-12
+	(export LD_PRELOAD=../src/io_middle.so; \
+	 export IOMIDDLE_CARE_PATH=./results; \
+	 $(MPIEXEC) -n 12 ./mytest -l 5 -f ./results/tdata-12)
+
+	(export LD_PRELOAD=../src/io_middle.so; \
+	 export IOMIDDLE_CARE_PATH=./results; \
+	 $(MPIEXEC) -n 12 ./mytest -l 3 -t -f ./results/tdata-12)
+#
+	 $(MPIEXEC) -n 12 ./mytest -l 3 -t -f ./results-nomiddle/tdata-12
+#
+#
 run-test-x86-12:
-	export LD_PRELOAD=../src/io_middle.so; \
-	export IOMIDDLE_CARE_PATH=./results; \
-	$(MPIEXEC) -n 12 ./mytest -l 5 -f ./results/tdata-12
+	rm -f ./results/tdata-12; rm -f ./results-nomiddle/tdata-12
+	(export LD_PRELOAD=../src/io_middle.so; \
+	 export IOMIDDLE_CARE_PATH=./results; \
+	 $(MPIEXEC) -n 12 ./mytest -l 3 -f ./results/tdata-12)
+#
+	 $(MPIEXEC) -n 12 ./mytest -l 3 -f ./results-nomiddle/tdata-12
+	ls -lt ./results*/tdata-12
+#
+#
 run-test-x86-debug:
 	export IOMIDDLE_DEBUG=2; \
 	export LD_PRELOAD=../src/io_middle.so; \

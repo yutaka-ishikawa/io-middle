@@ -17,8 +17,7 @@ extern off64_t	strsize;
 extern int	strcnt;
 extern size_t	len;
 extern size_t	bufsiz;
-extern int	nprocs, myrank, dflag, rwflag, vflag;
-extern int	rwflag;
+extern int	nprocs, myrank, dflag, vflag, rwflag, tflag;
 extern int	verbose;
 extern char	fname[1024];
 

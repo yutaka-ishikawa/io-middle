@@ -28,10 +28,13 @@ typedef struct fdinfo {
 	struct {
 	    unsigned int notfirst:1,
 			 dntcare: 1,
-			 mode:2;
+			 trunc: 1,	/* flag of open with O_TRUNC */
+			 rwmode: 2;	/* read or write mode */
 	};
 	int	attrall;
     };
+    int		flags;	   /* flags specified by open/creat */
+    int		mode;	   /* mode specified by open/creat */
     int		strsize;  /* stripe size */
     int		strcnt;	  /* stripe count */
     int		bufcount; /* block count */
@@ -40,9 +43,9 @@ typedef struct fdinfo {
     int		filoff;   /* offset of file */
     int		filcurb;  /* start block# must be written */
     int		filtail;  /* tail block# must be written */
-    off64_t	filblklen; /* block length = stripsize*nprocs */
-    off64_t	filpos; /* file position in byte */
-    off64_t	bufpos; /* buffer position in byte */
+    off64_t	filblklen;/* block length = stripsize*nprocs */
+    off64_t	filpos;   /* file position in byte */
+    off64_t	bufpos;   /* buffer position in byte */
     char	*ubuf;
     char	*sbuf;
 } fdinfo;
@@ -52,6 +55,7 @@ struct ioinfo {
     int		nprocs;
     int		rank;
     int		mybufcount;
+    int		reqtrunc;
     uint64_t	fdlimit;
     fdinfo	*fdinfo;
 };
