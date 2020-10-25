@@ -80,8 +80,13 @@ do_write(char *fnm, off64_t offset, void *bufp, size_t bufsiz)
     int		fd, iter;
     size_t	sz;
     off64_t	pos;
+    int		flags;
 
-    if ((fd = open(fnm, O_CREAT|O_WRONLY|O_TRUNC, 0644)) < 0) {
+    flags = O_CREAT|O_WRONLY;
+#if 0
+    flags |= O_TRUNC;
+#endif
+    if ((fd = open(fnm, flags, 0644)) < 0) {
 	fprintf(stderr, "Cannot open file %s\n", fnm);
 	exit(-1);
     }

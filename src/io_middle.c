@@ -180,14 +180,16 @@ buf_flush(fdinfo *info)
 {
     size_t	cc = -1ULL;
     int	i;
+    int off;
     size_t	strsize = info->strsize;
+    size_t	blksize = info->filblklen;
     /*
      * ubuf : user data buffer, contining stripe * bufcount
      * sbuf : system data buffer
      * ubuf --> sbuf per stripe
      */
+    off = 0;
     for (i = 0; i < info->bufcount; i++) {
-	int off = 0;
 	DEBUG(DLEVEL_BUFMGR) {
 	    data_show("ubuf", (int*) info->ubuf + off, 5, off);
 	}
@@ -217,8 +219,8 @@ buf_flush(fdinfo *info)
      *	sbuf     blk#0	  blk#1	      blk#2	blk#3
      */
     if (Myrank < info->bufcount) {
-	off_t	filpos = info->filcurb * info->filblklen;
-	size_t	wsize = strsize * info->bufcount;
+	size_t	sz;
+	off_t	filpos = info->filcurb * blksize;
 
 	DEBUG(DLEVEL_BUFMGR) {
 	    dbgprintf("writing size(%ld) filpos(%ld) "
@@ -229,20 +231,23 @@ buf_flush(fdinfo *info)
 		data_show("sbuf", (int*) (info->sbuf + i), 5, i);
 	    }
 	}
-	cc = pwrite(info->iofd, info->sbuf, wsize, filpos);
-	if (cc < wsize) { cc = -1ULL; goto ext; }
+	sz = pwrite(info->iofd, info->sbuf, blksize, filpos);
+#if 0
+	__real_lseek64(info->iofd, filpos, SEEK_SET);
+	sz = __real_write(info->iofd, info->sbuf, blksize);
+#endif
+	if (sz < blksize) { cc = -1ULL; }
     } else {
 	DEBUG(DLEVEL_BUFMGR) {
 	    dbgprintf("No needs to write\n", Myrank);
 	}
     }
-ext:
-    info->filcurb += info->strcnt;
-    info->filtail += info->strcnt;
     if(info->filcurb != info->filtail) {
 	dbgprintf("%s: Something Wrong ???? filcurb(%d) filtail(%d)\n",
 		  __func__, info->filcurb, info->filtail);
     }
+    info->filcurb += info->strcnt;
+    info->filtail += info->strcnt;
     info->bufcount = 0;
     info->bufpos = 0;
     return cc;

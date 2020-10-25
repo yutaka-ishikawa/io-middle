@@ -3,7 +3,7 @@
 int
 main(int argc, char **argv)
 {
-    char	*fname;
+    char	*fnm;
     unsigned int *data;
     FILE	*fp;
     off64_t	fpos;
@@ -31,8 +31,9 @@ main(int argc, char **argv)
 	exit(-1);
     }
 
-    fname = "tdata";
-    if ((fp = fopen(fname, "r")) == NULL) {
+    fnm = "tdata";
+    if (fname[0]) fnm = fname;
+    if ((fp = fopen(fnm, "r")) == NULL) {
 	fprintf(stderr, "Cannot open file %s\n", fname);
 	exit(-1);
     }

@@ -15,9 +15,17 @@ run-test-x86-4:
 run-test-x86-4r:
 	export LD_PRELOAD=../src/io_middle.so; \
 	$(MPIEXEC) -n 4 ./mytest -l 4 -r
-run-test-x86-16:
+run-test-x86-3:
+	rm ./results/tdata-3; rm ./results-nomiddle/tdata-3
+	(export LD_PRELOAD=../src/io_middle.so; \
+	export IOMIDDLE_CARE_PATH=./results; \
+	$(MPIEXEC) -n 3 ./mytest -l 2 -f ./results/tdata-3)
+#
+	($(MPIEXEC) -n 3 ./mytest -l 2 -f ./results-nomiddle/tdata-3;)
+run-test-x86-12:
 	export LD_PRELOAD=../src/io_middle.so; \
-	$(MPIEXEC) -n 16 ./mytest -l 4
+	export IOMIDDLE_CARE_PATH=./results; \
+	$(MPIEXEC) -n 12 ./mytest -l 5 -f ./results/tdata-12
 run-test-x86-debug:
 	export IOMIDDLE_DEBUG=2; \
 	export LD_PRELOAD=../src/io_middle.so; \
