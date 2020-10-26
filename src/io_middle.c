@@ -146,7 +146,6 @@ info_init(int fd, int flags, int mode)
     info->bufpos = 0;
     info->filpos = 0;
     info->bufcount = 0;
-    info->iofd     = fd;
     info->dntcare  = 0;
     info->flags    = flags;
     info->mode   = mode;
@@ -208,7 +207,7 @@ stripe_check_init(int fd, size_t len, int lseek)
 	    if (Myrank == 0) {
 		IOMIDDLE_IFERROR((len != 0), "%s",
 			 "lseek is issued before write/read on rank 0\n");
-		/* OK */
+		/* len == 0 OK, strsize will be determined at the first read/write call  */
 		goto ext;
 	    }
 	    strsize = len/Myrank;
@@ -238,7 +237,7 @@ ext:
     return rc;
 }
 
-size_t
+static size_t
 buf_flush(fdinfo *info)
 {
     size_t	cc = -1ULL;
@@ -566,6 +565,8 @@ _iomiddle_lseek64(int fd, off64_t offset, int whence)
     rc = _inf.fdinfo[fd].filpos = reqfilpos;
     /* lseek with 0 offset may be issued by rank 0.
      *  In this case, this request is ignored. */
+    /* FIXME:
+     * Must check if Rank 0 issues lseek offset = 0 after the first lseek issue */
     if (!(Myrank == 0 && reqfilpos == 0)) {
 	int	strsize  = _inf.fdinfo[fd].strsize;
 	int	strcnt   = _inf.fdinfo[fd].strcnt;
@@ -598,7 +599,7 @@ _iomiddle_lseek64(int fd, off64_t offset, int whence)
  * _myhijack_init:
  *  This function is invoked when one of the hijacked system call
  *  is invoked by the user.
- *	See lib/hooklib.c
+ *	See hooklib.c
  */
 void
 _myhijack_init()
@@ -606,6 +607,7 @@ _myhijack_init()
     int	i;
     char	*cp;
     struct rlimit rlim;
+    size_t	sz;
 
     cp = getenv("IOMIDDLE_DISABLE");
     if (cp && atoi(cp) == 1) {
@@ -636,9 +638,11 @@ _myhijack_init()
     getrlimit(RLIMIT_NOFILE, &rlim);
     Myrank = -1;
     _inf.fdlimit = rlim.rlim_cur;
-    _inf.fdinfo = malloc(sizeof(fdinfo)*_inf.fdlimit);
+    sz = sizeof(fdinfo)*_inf.fdlimit;
+    _inf.fdinfo = malloc(sz);
     IOMIDDLE_IFERROR((_inf.fdinfo == 0), "%s",
-		     "Canoot allocate working memory\n");
+		     "Cannot allocate working memory\n");
+    memset(_inf.fdinfo, 0, sz);
     /* Checking don't care fd's */
     for (i = 0; i < 3; i++) {
 	_inf.fdinfo[i].notfirst = 1;
