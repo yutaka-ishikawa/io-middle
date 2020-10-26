@@ -17,7 +17,7 @@ timer_init()
 {
     timer_hz = tick_helz( 0 );
     if (timer_hz == 0) {
-	printf("Cannot obtain CPU frequency\n");
+	myprintf("Cannot obtain CPU frequency\n");
 	exit(-1);
     }
 }
@@ -28,7 +28,7 @@ write_stripe(int fd, void *buf, size_t size, off64_t pos)
     size_t	rc;
     rc = lseek64(fd, pos, SEEK_SET);
     if (rc != pos) {
-	printf("Lseek error: rc(%ld) pos(%ld)\n", rc, pos);
+	myprintf("Lseek error: rc(%ld) pos(%ld)\n", rc, pos);
 	errors++;
 	return -1;
     }
@@ -42,7 +42,7 @@ read_stripe(int fd, void *buf, size_t size, off64_t pos)
     size_t	rc;
     rc = lseek64(fd, pos, SEEK_SET);
     if (rc != pos) {
-	printf("Lseek error: rc(%ld) pos(%ld)\n", rc, pos);
+	myprintf("Lseek error: rc(%ld) pos(%ld)\n", rc, pos);
 	errors++;
 	return -1;
     }
@@ -57,8 +57,8 @@ verify(void *bufp, size_t busiz, int val)
     int	errs = 0;
     for (pos = 0; pos < bufsiz/sizeof(unsigned int); pos++) {
 	if (((unsigned *)bufp)[pos] != pos + myrank + val) {
-	    printf("\t ERROR pos(%ld) value(%d) expect(%ld)\n",
-		   pos, ((unsigned *)bufp)[pos], pos + myrank + val);
+	    myprintf("\t ERROR pos(%ld) value(%d) expect(%ld)\n",
+		     pos, ((unsigned *)bufp)[pos], pos + myrank + val);
 	    if (errs++ > 4) break;
 	}
     }
@@ -87,19 +87,19 @@ do_write(char *fnm, off64_t offset, void *bufp, size_t bufsiz)
 	flags |= O_TRUNC;
     }
     if ((fd = open(fnm, flags, 0644)) < 0) {
-	fprintf(stderr, "Cannot open file %s\n", fnm);
+	myprintf("Cannot open file %s\n", fnm);
 	exit(-1);
     }
     fillin(bufp, bufsiz, 0);
     pos = offset;
     for (iter = 0; iter < len; iter++) {
 	VERBOSE {
-	    printf("[%d] iter=%d pos=%ld strsize(%ld)\n",
-		   myrank, iter, pos, strsize);
+	    myprintf("[%d] iter=%d pos=%ld strsize(%ld)\n",
+		     myrank, iter, pos, strsize);
 	}
 	sz = write_stripe(fd, bufp, strsize, pos);
 	if (sz != strsize) {
-	    printf("Write size = %ld, not %ld\n", sz, strsize);
+	    myprintf("Write size = %ld, not %ld\n", sz, strsize);
 	}
 	pos += strsize*nprocs;
     }
@@ -114,21 +114,20 @@ do_read(char *fnm, off64_t offset, void *bufp, size_t busiz)
     off64_t	pos;
     
     if ((fd = open(fnm, O_RDONLY)) < 0) {
-	fprintf(stderr, "Cannot open file %s\n", fnm);
+	myprintf("Cannot open file %s\n", fnm);
 	exit(-1);
     }
     pos = offset;
     for (iter = 0; iter < len; iter++) {
 	VERBOSE {
-	    printf("[%d] iter=%d pos=%ld strsize(%ld)\n",
-		   myrank, iter, pos, strsize);
+	    myprintf("iter=%d pos=%ld strsize(%ld)\n", iter, pos, strsize);
 	}
 	if (vflag) {
 	    fillin(bufp, bufsiz, -1);
 	}
 	sz = read_stripe(fd, bufp, strsize, pos);
 	if (sz != strsize) {
-	    printf("Write size = %ld, not %ld\n", sz, strsize);
+	    myprintf("Write size = %ld, not %ld\n", sz, strsize);
 	}
 	if (vflag) {
 	    errors += verify(bufp, bufsiz, 0);
@@ -146,14 +145,14 @@ main(int argc, char **argv)
     double	tot_fsize;
 
     if (dflag) {
-	printf("MAIN STARTS\n");
+	myprintf("MAIN STARTS\n");
     }
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
     MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
     VERBOSE {
 	if (myrank == 0) {
-	    printf("nprocs(%d) myrank(%d)\n", nprocs, myrank);
+	    myprintf("nprocs(%d) myrank(%d)\n", nprocs, myrank);
 	}
     }
     test_parse_args(argc, argv);
@@ -164,7 +163,7 @@ main(int argc, char **argv)
     bufsiz = strsize*len;
     bufp = malloc(bufsiz);
     if (bufp == NULL) {
-	fprintf(stderr, "Cannot allocate buffer memory "
+	myprintf("Cannot allocate buffer memory "
 		"(size = %lf MiB, stripe size = %lf KiB, length = %ld)\n",
 		(float)bufsiz/(1024.0*1024.0), (float)strsize/1024.0, len);
 	exit(-1);
@@ -172,17 +171,17 @@ main(int argc, char **argv)
     timer_init();
     tot_fsize = ((double)(bufsiz*nprocs))/(1024.0*1024.);
     if (myrank == 0) {
-	printf("          nprocs: %d\n"
-	       "     stripe size: %ld\n"
-	       " proc write size: %f kB\n"
-	       "total write size: %f MiB\n"
-	       "       file name: %s\n"
-	       "        truncate: %d\n"
-	       "              hz: %ld\n"
-	       "           debug: %d\n",
-	       nprocs, strsize,
-	       (float)bufsiz/1024.0,
-	       tot_fsize, fnm, tflag, timer_hz, dflag);
+	myprintf("          nprocs: %d\n"
+		 "     stripe size: %ld\n"
+		 " proc write size: %f kB\n"
+		 "total write size: %f MiB\n"
+		 "       file name: %s\n"
+		 "        truncate: %d\n"
+		 "              hz: %ld\n"
+		 "           debug: %d\n",
+		 nprocs, strsize,
+		 (float)bufsiz/1024.0,
+		 tot_fsize, fnm, tflag, timer_hz, dflag);
     }
     if (rwflag & DO_WRITE) {
 	timer_st[0] = tick_time();
@@ -197,24 +196,24 @@ main(int argc, char **argv)
     if (myrank == 0) {
 	double	bw, eltime;
 	if (errors) {
-	    printf("\nERROR:  # of errors %d\n", errors);
+	    myprintf("\nERROR:  # of errors %d\n", errors);
 	} else {
-	    printf("SUCCESS\n");
+	    myprintf("SUCCESS\n");
 	    if (rwflag & DO_WRITE) {
 		eltime = TIMER_SECOND(timer_et[0] - timer_st[0]);
 		bw = tot_fsize/eltime;
-		printf("\tWrite: \n"
-		       "\t   Time: %12.9f second\n"
-		       "\t     BW: %12.9f MiB/sec\n",
-		       (float) eltime, (float) bw);
+		myprintf("\tWrite: \n"
+			 "\t   Time: %12.9f second\n"
+			 "\t     BW: %12.9f MiB/sec\n",
+			 (float) eltime, (float) bw);
 	    }
 	    if (rwflag & DO_READ) {
 		eltime = TIMER_SECOND(timer_et[1] - timer_st[1]);
 		bw = tot_fsize/eltime;
-		printf("\tRead: \n"
-		       "\t   Time: %12.9f second\n"
-		       "\t     BW: %12.9f MiB/sec\n",
-		       (float) eltime, (float) bw);
+		myprintf("\tRead: \n"
+			 "\t   Time: %12.9f second\n"
+			 "\t     BW: %12.9f MiB/sec\n",
+			 (float) eltime, (float) bw);
 	    }
 	}
     }

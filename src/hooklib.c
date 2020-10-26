@@ -51,12 +51,12 @@ PTR_DECL(open, int, (const char *path, int flags, ...));
 PTR_DECL(close, int, (int fd));
 PTR_DECL(write, ssize_t, (int fd, const void *buf, size_t count));
 PTR_DECL(read, ssize_t, (int fd, void *buf, size_t count));
+PTR_DECL(lseek, off_t, (int fd, off_t offset, int whence));
 PTR_DECL(lseek64, off64_t, (int fd, off64_t offset, int whence));
 
 #if 0
 PTR_DECL(creat64, int, (const char* path, mode_t mode));
 PTR_DECL(open64, int, (const char *path, int flags, ...));
-PTR_DECL(lseek, off_t, (int fd, off_t offset, int whence));
 PTR_DECL(pread, ssize_t, (int fd, void *buf, size_t count, off_t offset));
 PTR_DECL(pread64, ssize_t, (int fd, void *buf, size_t count, off64_t offset));
 PTR_DECL(pwrite, ssize_t, (int fd, const void *buf, size_t count, off_t offset));
@@ -157,6 +157,14 @@ ssize_t read(int fd, void *buf, size_t count)
 
     // fprintf(stderr, "READ %d 0x%p %ld\n", fd, buf, count);
     HIJACK_DO(ret, read, (fd, buf, count));
+    return ret;
+}
+
+off_t
+lseek(int fd, off_t offset, int whence)
+{
+    ssize_t	ret;
+    HIJACK_DO(ret, lseek, (fd, offset, whence));
     return ret;
 }
 

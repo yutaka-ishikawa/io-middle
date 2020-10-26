@@ -54,3 +54,18 @@ test_parse_args(int argc, char **argv)
 	}
     }
 }
+
+int
+myprintf(const char *fmt, ...)
+{
+    va_list	ap;
+    int		rc;
+
+    fprintf(stderr, "[%d] ", myrank); fprintf(stdout, "[%d] ", myrank);
+    va_start(ap, fmt);
+    rc = vfprintf(stderr, fmt, ap); rc = vfprintf(stdout, fmt, ap);
+    va_end(ap);
+    fflush(stderr); fflush(stdout);
+
+    return rc;
+}

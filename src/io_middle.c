@@ -227,7 +227,7 @@ stripe_check_init(int fd, size_t len, int lseek)
 	if (lseek == 0) {
 	    if (len != _inf.fdinfo[fd].strsize) {
 		dbgprintf("read/write size must be always stripe size: "
-			  "stripe size(%ld), requested size(%d)\n",
+			  "requested size(%d) stripe size(%ld)\n",
 			  len, _inf.fdinfo[fd].strsize);
 		rc = -1;
 	    }
@@ -253,7 +253,7 @@ buf_flush(fdinfo *info)
     off = 0;
     for (i = 0; i < info->bufcount; i++) {
 	DEBUG(DLEVEL_BUFMGR) {
-	    data_show("ubuf", (int*) info->ubuf + off, 5, off);
+	    data_show("ubuf", (int*) (info->ubuf + off), 5, off);
 	}
 	MPI_CALL(
 	    MPI_Gather(info->ubuf + off, strsize, MPI_BYTE,
@@ -298,11 +298,16 @@ buf_flush(fdinfo *info)
 	__real_lseek64(info->iofd, filpos, SEEK_SET);
 	sz = __real_write(info->iofd, info->sbuf, blksize);
 #endif
-	if (sz < blksize) { cc = -1ULL; }
+	if (sz < blksize) {
+	    cc = -1ULL;
+	} else {
+	    cc = strsize;
+	}
     } else {
 	DEBUG(DLEVEL_BUFMGR) {
 	    dbgprintf("No needs to write\n", Myrank);
 	}
+	cc = strsize;
     }
     if(info->filcurb != info->filtail) {
 	dbgprintf("%s: Something Wrong ???? filcurb(%d) filtail(%d)\n",
@@ -384,7 +389,7 @@ err:
 int
 _iomiddle_close(int fd)
 {
-    int	rc;
+    int	rc = 0;
     fdinfo	*info;
     
     if (_inf.fdinfo[fd].dntcare || _inf.fdinfo[fd].iofd == 0) {
@@ -394,10 +399,13 @@ _iomiddle_close(int fd)
     info =  &_inf.fdinfo[fd];
     DEBUG(DLEVEL_HIJACKED) { fprintf(stderr, "%s DO-CARE fd(%d)\n", __func__, fd); }
     if (_inf.fdinfo[fd].bufcount > 0) {
+	size_t	sz;
 	DEBUG(DLEVEL_BUFMGR) {
 	    dbgprintf("%s: bufcount(%d)\n", __func__, _inf.fdinfo[fd].bufcount);
 	}
-	rc = buf_flush(info);
+	sz = buf_flush(info);
+	/* FIXME: how this error propagates ? */
+	rc = (sz == _inf.fdinfo[fd].strsize) ? 0 : -1;
     }
     if (_inf.reqtrunc && info->trunc) {
 	off64_t	filpos = info->filpos;
@@ -415,6 +423,8 @@ _iomiddle_close(int fd)
 	    MPI_Reduce(&info->filpos, &filpos, 1, MPI_UNSIGNED_LONG_LONG,
 		       MPI_MAX, 0, MPI_COMM_WORLD);
 	}
+    } else {
+	rc = __real_close(fd);
     }
     info->attrall = 0;
     info->iofd = -1;
@@ -524,6 +534,82 @@ ext:
     return rc;
 }
 
+static off64_t
+lseek_general(int fd, off64_t reqfilpos)
+{
+    off64_t	rc;
+    /* if this call is issued prior to read/write.
+     * rqfilpos must be equal to stripe size. */
+    if (stripe_check_init(fd, reqfilpos, 1)) {
+	DEBUG(DLEVEL_HIJACKED) { info_show(fd, __func__); }
+	abort();
+    }
+    /* file position is now reqfilpos */
+    rc = _inf.fdinfo[fd].filpos = reqfilpos;
+    /* lseek with 0 offset may be issued by rank 0.
+     *  In this case, this request is ignored. */
+    /* FIXME:
+     * Must check if Rank 0 issues lseek offset = 0 after the first lseek issue */
+    if (!(Myrank == 0 && reqfilpos == 0)) {
+	int	strsize  = _inf.fdinfo[fd].strsize;
+	int	strcnt   = _inf.fdinfo[fd].strcnt;
+	int	strnum   = reqfilpos/strsize;
+	int	expct_rank = strnum % strcnt;
+	int	blks     = (strnum/(strcnt*Nprocs))*Nprocs + Myrank;
+
+	DEBUG(DLEVEL_BUFMGR) {
+	    dbgprintf("%s: strnum(%d) blks(%d) strsize(%d)\n",
+		      __func__, strnum, blks, strsize);
+	}
+	/* checking if the file position is algined to this rank */
+	IOMIDDLE_IFERROR((expct_rank != Myrank),
+			 "lseek_general: offset is not expected in this rank. "
+			 "response rank=%d offset=%lx\n",
+			 expct_rank, reqfilpos);
+	/* checking if this file position is the next */
+	IOMIDDLE_IFERROR((blks != _inf.fdinfo[fd].filtail),
+			 "lseek_general: offset is out of block area: %ld "
+			 " (blks(%d) tailblks(%d))\n",
+			 reqfilpos, blks, _inf.fdinfo[fd].filtail);
+    }
+    return rc;
+}
+
+/*
+ * lseek system call
+ */
+off_t
+_iomiddle_lseek(int fd, off_t offset, int whence)
+{
+    off_t	rc = 0;
+    off_t	reqfilpos;
+
+    if (_inf.fdinfo[fd].dntcare || _inf.fdinfo[fd].iofd == 0) {
+	rc = __real_lseek(fd, offset, whence);
+	return rc;
+    }
+    DEBUG(DLEVEL_HIJACKED) {
+	dbgprintf("%s DO-CARE fd(%d) offset(%ld) whence(%d)\n",
+		  __func__, fd, offset, whence);
+    }
+    switch (whence) {
+    case SEEK_SET:
+	reqfilpos = offset;
+	break;
+    case SEEK_CUR:
+	reqfilpos = _inf.fdinfo[fd].filpos + offset;
+	break;
+    case SEEK_END:
+	fprintf(stderr, "lseek64: whence(%d) is not allowed\n", whence);
+	abort();
+    default:
+	fprintf(stderr, "lseek64: unknown whence value %d\n", whence);
+	abort();
+    }
+    rc = lseek_general(fd, (off_t) reqfilpos);
+    return rc;
+}
+
 /*
  * lseek64 system call
  */
@@ -555,40 +641,7 @@ _iomiddle_lseek64(int fd, off64_t offset, int whence)
 	fprintf(stderr, "lseek64: unknown whence value %d\n", whence);
 	abort();
     }
-    /* if this call is issued prior to read/write.
-     * rqfilpos must be equal to stripe size. */
-    if (stripe_check_init(fd, reqfilpos, 1)) {
-	DEBUG(DLEVEL_HIJACKED) { info_show(fd, __func__); }
-	abort();
-    }
-    /* file position is now reqfilpos */
-    rc = _inf.fdinfo[fd].filpos = reqfilpos;
-    /* lseek with 0 offset may be issued by rank 0.
-     *  In this case, this request is ignored. */
-    /* FIXME:
-     * Must check if Rank 0 issues lseek offset = 0 after the first lseek issue */
-    if (!(Myrank == 0 && reqfilpos == 0)) {
-	int	strsize  = _inf.fdinfo[fd].strsize;
-	int	strcnt   = _inf.fdinfo[fd].strcnt;
-	int	strnum   = reqfilpos/strsize;
-	int	expct_rank = strnum % strcnt;
-	int	blks     = (strnum/(strcnt*Nprocs))*Nprocs + Myrank;
-
-	DEBUG(DLEVEL_BUFMGR) {
-	    dbgprintf("%s: strnum(%d) blks(%d) strsize(%d)\n",
-		      __func__, strnum, blks, strsize);
-	}
-	/* checking if the file position is algined to this rank */
-	IOMIDDLE_IFERROR((expct_rank != Myrank),
-			 "lseek64: offset is not expected in this rank. "
-			 "response rank=%d offset=%lx\n",
-			 expct_rank, reqfilpos);
-	/* checking if this file position is the next */
-	IOMIDDLE_IFERROR((blks != _inf.fdinfo[fd].filtail),
-			 "[%d] lseek64: offset is out of block area: %ld "
-			 " (blks(%d) tailblks(%d))\n",
-			 Myrank, reqfilpos, blks, _inf.fdinfo[fd].filtail);
-    }
+    rc = lseek_general(fd, reqfilpos);
     return rc;
 }
 
@@ -653,6 +706,7 @@ _myhijack_init()
     _hijacked_open = _iomiddle_open;
     _hijacked_close = _iomiddle_close;
     _hijacked_read = _iomiddle_read;
+    _hijacked_lseek = _iomiddle_lseek;
     _hijacked_lseek64 = _iomiddle_lseek64;
     _hijacked_write = _iomiddle_write;
 }

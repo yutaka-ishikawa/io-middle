@@ -22,3 +22,4 @@ extern int	verbose;
 extern char	fname[1024];
 
 extern void test_parse_args(int, char **argc);
+extern int  myprintf(const char *fmt, ...);
