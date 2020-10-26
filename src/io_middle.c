@@ -205,8 +205,8 @@ stripe_check_init(int fd, size_t len, int lseek)
     if (!_inf.fdinfo[fd].notfirst) {
 	if (lseek) {
 	    if (Myrank == 0) {
-		IOMIDDLE_IFERROR((len != 0), "%s",
-			 "lseek is issued before write/read on rank 0\n");
+		IOMIDDLE_IFERROR((len != 0),
+				 "lseek (%ld) is issued before write/read on rank 0\n", len);
 		/* len == 0 OK, strsize will be determined at the first read/write call  */
 		goto ext;
 	    }
