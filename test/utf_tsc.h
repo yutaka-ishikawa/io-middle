@@ -99,7 +99,7 @@ static inline uint64_t tick_helz_auto(void)
 
 static inline uint64_t tick_helz_auto(void)
 {
-    uint32_t helz = 0;
+    uint64_t helz = 0;
     asm volatile("mrs %0, cntfrq_el0" : "=r" (helz));
     return helz;
 }

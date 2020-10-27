@@ -396,10 +396,13 @@ _iomiddle_open(const char *path, int flags, ...)
 	_inf.fdinfo[fd].notfirst = 1;
 	_inf.fdinfo[fd].dntcare = 1;
     } else {
+	fprintf(stderr, "[%d] open() DO-CARE file fd(%d) path(%s)\n",
+		Myrank, fd, path);
 	DEBUG(DLEVEL_HIJACKED|DLEVEL_CONFIRM) {
 	    fprintf(stderr, "[%d] open() DO-CARE file fd(%d) path(%s)\n",
 		    Myrank, fd, path);
 	}
+	worker_init();
 	info_init(fd, flags, mode);
 	io_init(Wenbflg, fd);
     }
@@ -734,8 +737,8 @@ _myhijack_init()
     }
 
     /* worker is created and initialized */
-    worker_init();
-    /* here are hijacked system call regisration */
+    //worker_init();
+    /* here are hijacked system call registration */
     _hijacked_creat = _iomiddle_creat;
     _hijacked_open = _iomiddle_open;
     _hijacked_close = _iomiddle_close;

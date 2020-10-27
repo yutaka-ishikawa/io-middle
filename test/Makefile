@@ -4,11 +4,13 @@ include ../dep/mkdef.$(IO_MIDDLE_ARCH)
 
 all: mytest myverify
 mytest: mytest.c testlib.h testlib.o ../src/io_middle.so
-	$(MPICC) -DMPI -o mytest mytest.c testlib.o
+	$(MPICC) $(CFLAGS) -o mytest mytest.c testlib.o
 myverify: myverify.o testlib.h testlib.o
 	$(CC) -o myverify myverify.o testlib.o
 testlib.o: testlib.c testlib.h
-	$(MPICC) -c -o $@ $<
+	$(MPICC) $(CFLAGS) -c -o $@ $<
+#
+#
 run-test-x86-4:
 	export LD_PRELOAD=../src/io_middle.so; \
 	$(MPIEXEC) -n 4 ./mytest -l 4
@@ -23,7 +25,7 @@ run-test-x86-3:
 #
 	($(MPIEXEC) -n 3 ./mytest -l 2 -f ./results-nomiddle/tdata-3)
 #
-run-test-x86-3:
+run-test-x86-3-worker:
 	rm -f ./results/tdata-3; rm -f ./results-nomiddle/tdata-3
 	(export LD_PRELOAD=../src/io_middle.so; \
 	 export IOMIDDLE_CARE_PATH=./results; \
