@@ -183,6 +183,7 @@ main(int argc, char **argv)
 		 (float)bufsiz/1024.0,
 		 tot_fsize, fnm, tflag, timer_hz, dflag);
     }
+
     if (rwflag & DO_WRITE) {
 	timer_st[0] = tick_time();
 	do_write(fnm, offset, bufp, bufsiz);

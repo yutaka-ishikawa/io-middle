@@ -1,5 +1,6 @@
 #include "testlib.h"
 #include <mpi.h>
+#include <stdarg.h>
 
 off64_t	strsize = DEFAULT_STRSIZE;
 int	strcnt;
@@ -61,9 +62,11 @@ myprintf(const char *fmt, ...)
     va_list	ap;
     int		rc;
 
-    fprintf(stderr, "[%d] ", myrank); fprintf(stdout, "[%d] ", myrank);
+    // fprintf(stderr, "[%d] ", myrank);
+    fprintf(stdout, "[%d] ", myrank);
     va_start(ap, fmt);
-    rc = vfprintf(stderr, fmt, ap); rc = vfprintf(stdout, fmt, ap);
+    //rc = vfprintf(stderr, fmt, ap);
+    rc = vfprintf(stdout, fmt, ap);
     va_end(ap);
     fflush(stderr); fflush(stdout);
 

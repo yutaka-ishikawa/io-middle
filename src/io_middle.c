@@ -23,7 +23,6 @@
  *	   -- disable this middleware hooks.
  *	IOMIDDLE_DEBUG
  *	   -- debug messages are displayed.
- *
  * Usage:
  *	$ cd ../src
  *	$ (export LD_PRELOAD=../src/io_middle.so; \
@@ -32,16 +31,22 @@
  *	Note that the LD_PRELOAD environment should not be set on your bash
  *	   currently used.  If set, all commands/programs invoked on that bash 
  *	   are contolled under this IO Middleware.
+ * TODO:
+ *	dup and dup2 must be also captured.
  */
 #include "io_middle.h"
 #include <mpi.h>
 #include <limits.h>
 
-#define Myrank 	(_inf.rank)
-#define Nprocs 	(_inf.nprocs)
-
 static struct ioinfo _inf;
 static char	care_path[PATH_MAX];
+
+static void	worker_init();
+static void	worker_fin();
+static void	io_init(int flg, int fd);
+static void	io_fin(int fd);
+static size_t	io_issue(size_t (*cmd)(int, void*, size_t, off64_t),
+			 int fd, void *buf, size_t size, off64_t pos);
 
 #if 0
 static char	*dont_path[] = {
@@ -237,6 +242,27 @@ ext:
     return rc;
 }
 
+static inline size_t
+io_write(int fd, void *buf, size_t size, off64_t pos)
+{
+    size_t	sz;
+
+    sz = pwrite(fd, buf, size, pos);
+    // __real_lseek64(info->iofd, filpos, SEEK_SET);
+    // sz = __real_write(info->iofd, info->sbuf, blksize);
+
+    return sz;
+}
+
+static inline size_t
+io_read(int fd, void *buf, size_t size, off64_t pos)
+{
+    size_t	sz;
+
+    sz = __real_read(fd, buf, size);
+    return sz;
+}
+
 static size_t
 buf_flush(fdinfo *info)
 {
@@ -293,11 +319,8 @@ buf_flush(fdinfo *info)
 		data_show("sbuf", (int*) (info->sbuf + i), 5, i);
 	    }
 	}
-	sz = pwrite(info->iofd, info->sbuf, blksize, filpos);
-#if 0
-	__real_lseek64(info->iofd, filpos, SEEK_SET);
-	sz = __real_write(info->iofd, info->sbuf, blksize);
-#endif
+	sz = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf, blksize, filpos);
+	//sz = io_write(info->iofd, info->sbuf, blksize, filpos);
 	if (sz < blksize) {
 	    cc = -1ULL;
 	} else {
@@ -378,6 +401,7 @@ _iomiddle_open(const char *path, int flags, ...)
 		    Myrank, fd, path);
 	}
 	info_init(fd, flags, mode);
+	io_init(Wenbflg, fd);
     }
 err:
     return fd;
@@ -391,7 +415,8 @@ _iomiddle_close(int fd)
 {
     int	rc = 0;
     fdinfo	*info;
-    
+
+    /* file dscriptor 0 is never used */
     if (_inf.fdinfo[fd].dntcare || _inf.fdinfo[fd].iofd == 0) {
 	rc = __real_close(fd);
 	return rc;
@@ -432,6 +457,7 @@ _iomiddle_close(int fd)
     free(info->sbuf);
     info->ubuf = 0;
     info->sbuf = 0;
+    io_fin(fd);
     return rc;
 }
 
@@ -504,7 +530,8 @@ _iomiddle_read(int fd, void *buf, size_t len)
 	int	i, off = 0;
 	size_t	cc;
 
-	cc = __real_read(info->iofd, info->sbuf, info->bufsize);
+	//cc = __real_read(info->iofd, info->sbuf, info->bufsize);
+	cc = io_issue(WRK_CMD_READ, info->iofd, info->sbuf, info->bufsize, 0);
 	/* Though read opertaion returns error, other processes may success.
 	 * Thus error is checked after Scatter */
 	for (i = 0; i < Nprocs; i++) {
@@ -682,6 +709,10 @@ _myhijack_init()
     if (cp && atoi(cp) > 0) {
 	_inf.reqtrunc = 1;
     }
+    cp = getenv("IOMIDDLE_WORKER");
+    if (cp && atoi(cp) > 0) {
+	Wenbflg = 1;	/* enable flag is set */
+    }
     DEBUG(DLEVEL_CONFIRM) {
 	printf("IOMIDDLE_CARE_PATH = %s\n", care_path);
     }
@@ -701,6 +732,9 @@ _myhijack_init()
 	_inf.fdinfo[i].notfirst = 1;
 	_inf.fdinfo[i].dntcare = 1;
     }
+
+    /* worker is created and initialized */
+    worker_init();
     /* here are hijacked system call regisration */
     _hijacked_creat = _iomiddle_creat;
     _hijacked_open = _iomiddle_open;
@@ -711,3 +745,225 @@ _myhijack_init()
     _hijacked_write = _iomiddle_write;
 }
 
+/***************************************************************
+ * Nonblocking read/write IO implemented by pthread
+ *************************************************************/
+#include <pthread.h>
+
+/*
+ * This function is used for just the function address
+ */
+static inline size_t
+io_workerfin(int fd, void *buf, size_t size, off64_t pos)
+{
+    dbgprintf("%s dummy. never called\n", __func__);
+    exit(0);
+}
+
+static inline void
+worker_sigdone(size_t sz)
+{
+    Wcmd = WRK_CMD_DONE;
+    Wcret = sz;
+    pthread_mutex_unlock(&Wmtx);
+    pthread_cond_signal(&Wcnd);
+}
+
+void *
+worker(void *p)
+{
+    size_t	sz;
+    DEBUG(DLEVEL_WORKER) {
+	dbgprintf("%s: invoked \n", __func__);
+    }
+    pthread_barrier_wait(&Wsync);
+    DEBUG(DLEVEL_WORKER) {
+	dbgprintf("%s: starts \n", __func__);
+    }
+    while (Wsig == 0) {
+	pthread_mutex_lock(&Wmtx);
+	if (Wcmd == WRK_CMD_DONE) {
+	    DEBUG(DLEVEL_WORKER) {
+		dbgprintf("%s: wait for request\n", __func__);
+	    }
+	    pthread_cond_wait(&Wcnd, &Wmtx);
+	}
+	DEBUG(DLEVEL_WORKER) {
+	    dbgprintf("%s: cmd(%s) cfd(%d) cbuf(%p) csize(%ld) cpos(%ld) rbuf(%p)\n",
+		      __func__, (Wcmd == WRK_CMD_WRITE) ? "WRITE" : "READ",
+		      Wcfd, Wcbuf, Wcsiz, Wcpos, Wcret, Wrbuf);
+	}
+	if (Wcmd == WRK_CMD_WRITE) {
+	    sz = io_write(Wcfd, Wcbuf, Wcsiz, Wcpos);
+	    worker_sigdone(sz); /* signal to the client, go ahead */
+	} else if (Wcmd == WRK_CMD_READ) {
+	    if (!Wnfst) { /* this is the first time to read */
+		Wnfst = 1;
+		/* read buffer */
+		Wrbuf = malloc(sz);
+		if(Wrbuf == NULL) {
+		    dbgprintf("%s: Cannot allocate buffer\n", __func__);
+		    exit(-1);
+		}
+		sz = io_read(Wcfd, Wcbuf, Wcsiz, Wcpos);
+		/* prefetching and its return values is stored in Wrret */
+		Wrret = io_read(Wcfd, Wrbuf, Wcsiz, Wcpos);
+		worker_sigdone(sz); /* signal to the client, go ahead */
+	    } else {
+		sz = Wcret;
+		if (sz > 0) {
+		    memcpy(Wcbuf, Wrbuf, Wcsiz);
+		}
+		worker_sigdone(sz); /* signal to the client, go ahead */
+		/* worker is still working here */
+		Wrret = io_read(Wcfd, Wrbuf, Wcsiz, Wcpos);
+	    }
+	} else if (Wcmd == WRK_CMD_FIN) {
+	    DEBUG(DLEVEL_WORKER) {
+		dbgprintf("%s: Exiting\n", __func__);
+	    }
+	    pthread_exit(0);
+	} else {
+	    dbgprintf("%s: internal error\n", __func__);
+	    abort();
+	}
+	DEBUG(DLEVEL_WORKER) {
+	    dbgprintf("%s: done\n", __func__);
+	}
+    }
+    DEBUG(DLEVEL_WORKER) {
+	dbgprintf("worker ends with signal (%d)\n", Wsig);
+    }
+    return NULL;
+}
+
+static inline size_t
+io_issue(size_t (*cmd)(int, void*, size_t, off64_t),
+	 int fd, void *buf, size_t size, off64_t pos)
+{
+    size_t	sz;
+    DEBUG(DLEVEL_WORKER) {
+	dbgprintf("%s: cmd(%p) fd(%d) buf(%p) size(%ld) pos(%ld)\n",
+		  __func__, (cmd == WRK_CMD_WRITE) ? "WRITE": "READ", fd, buf, size, pos);
+    }
+    if (Wenable && Wcfd == _inf.fdinfo[fd].iofd) {
+	pthread_mutex_lock(&Wmtx);
+	if (Wcmd != WRK_CMD_DONE) {
+	    DEBUG(DLEVEL_WORKER) {
+		dbgprintf("%s: wait for worker ready.\n",  __func__);
+	    }
+	    pthread_cond_wait(&Wcnd, &Wmtx);
+	}
+	DEBUG(DLEVEL_WORKER) {
+	    dbgprintf("%s: requesting. prev ret(%ld)\n", __func__, Wcret);
+	}
+	/* The return value is the last operation */
+	sz = Wcret;
+	Wcmd = cmd; Wcbuf = buf; Wcsiz = size; Wcpos = pos;
+	pthread_mutex_unlock(&Wmtx);
+	pthread_cond_signal(&Wcnd);
+	DEBUG(DLEVEL_WORKER) {
+	    dbgprintf("%s: done\n", __func__);
+	}
+    } else {
+	/*
+	 * Blocking IO for this request because
+	 * worker is not working or this fd is not cared by the worker
+	 */
+	DEBUG(DLEVEL_WORKER) {
+	    dbgprintf("%s: Blocking IO\n", __func__);
+	}
+	if (cmd == io_read || cmd == io_write) {
+	sz = cmd(fd, buf, size, pos);
+	} else {
+	    dbgprintf("%s: internal error\n", __func__);
+	    abort();
+	}
+    }
+    return sz;
+}
+
+static void
+io_init(int is_worker_enable, int fd)
+{
+    if (Wcfd != 0) {
+	dbgprintf("%s: fd=%d is cared by the current worker\n", __func__, fd);
+	return;
+    }
+    if (is_worker_enable) {
+	dbgprintf("%s: Initialize for fd=%d worker(%d)\n", __func__, fd, is_worker_enable);
+	Wcmd = WRK_CMD_DONE;
+	Wcfd = fd;
+	Wcbuf = 0; Wcsiz = 0; Wcpos = 0; Wrbuf = 0;
+	Wenable = is_worker_enable;
+    }
+}
+
+static void
+io_fin(int fd)
+{
+    if (fd != Wcfd) {
+	return;
+    }
+    DEBUG(DLEVEL_WORKER) {
+	dbgprintf("%s: finalzation of file IO for fd(%d)\n", __func__, fd);
+    }
+    pthread_mutex_lock(&Wmtx);
+    if (Wcmd != WRK_CMD_DONE) {
+	DEBUG(DLEVEL_WORKER) {
+	    dbgprintf("%s: still worker is working\n", __func__);
+	}
+	pthread_cond_wait(&Wcnd, &Wmtx);
+    }
+    pthread_mutex_unlock(&Wmtx);
+    dbgprintf("%s: worker is idle\n", __func__);
+    Wcfd = 0;
+    if (Wrbuf) {
+	free(Wrbuf);
+    }
+    Wrbuf = 0;
+}
+
+void
+worker_init()
+{
+    int	cc;
+
+    atexit(worker_fin);
+    pthread_mutex_init(&Wmtx, NULL);
+    pthread_cond_init(&Wcnd, NULL);
+    pthread_barrier_init(&Wsync, 0, 2);
+    cc = pthread_create(&Wthid, NULL, worker,  0);
+    if (cc != 0) {
+	perror("worker_init"); exit(-1);
+    }
+    /* wait for worker ready */
+    DEBUG(DLEVEL_WORKER) {
+	dbgprintf("%s: wait for worker ready\n", __func__);
+    }
+    pthread_barrier_wait(&Wsync);
+    DEBUG(DLEVEL_WORKER) {
+	dbgprintf("%s: DONE.\n", __func__);
+    }
+}
+
+void
+worker_fin()
+{
+    void	*retval;
+    
+    pthread_mutex_lock(&Wmtx);
+    if (Wcmd != WRK_CMD_DONE) {
+	DEBUG(DLEVEL_WORKER) {
+	    dbgprintf("%s: still worker is working\n", __func__);
+	}
+	pthread_cond_wait(&Wcnd, &Wmtx);
+    }
+    Wcmd = WRK_CMD_FIN;
+    pthread_mutex_unlock(&Wmtx);
+    pthread_cond_signal(&Wcnd);
+    pthread_join(Wthid, &retval);
+    DEBUG(DLEVEL_WORKER) {
+	dbgprintf("%s: FIN (%lx).\n", __func__, retval);
+    }
+}
