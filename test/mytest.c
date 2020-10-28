@@ -187,11 +187,17 @@ main(int argc, char **argv)
     }
 
     if (rwflag & DO_WRITE) {
+	VERBOSE {
+	    if (myrank == 0) myprintf("\nWRITE START\n");
+	}
 	timer_st[0] = tick_time();
 	do_write(fnm, offset, bufp, bufsiz);
 	timer_et[0] = tick_time();
     }
     if (rwflag & DO_READ) {
+	VERBOSE {
+	    if (myrank == 0) myprintf("\nREAD START\n");
+	}
 	timer_st[1] = tick_time();
 	do_read(fnm, offset, bufp, bufsiz);
 	timer_et[1] = tick_time();

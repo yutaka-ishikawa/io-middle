@@ -56,6 +56,7 @@ typedef struct fdinfo {
     off64_t	filblklen;/* block length = stripsize*nprocs */
     off64_t	filpos;   /* file position in byte */
     off64_t	bufpos;   /* buffer position in byte */
+    int		lanepos;  /* lane posision for read */
     char	*ubuf;
     char	*sbuf;
 } fdinfo;

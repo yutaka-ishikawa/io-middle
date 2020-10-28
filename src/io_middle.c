@@ -305,7 +305,7 @@ io_read(int fd, void *buf, size_t size, off64_t pos)
 }
 
 static size_t
-buf_flush(fdinfo *info)
+buf_flush(fdinfo *info, int cls)
 {
     size_t	cc = -1ULL;
     int	i, j;
@@ -319,8 +319,8 @@ buf_flush(fdinfo *info)
      * ubuf --> sbuf per stripe
      */
     uoff = 0; soff = 0;
-    for (j = 0; j < info->buflanes; j++) {
-	int	thiscount = (j == info->buflanes - 1) ? info->bufcount: strcnt;
+    for (j = 0; j <= info->buflanes; j++) {
+	int	thiscount = (j == info->buflanes) ? info->bufcount: strcnt;
 	for (i = 0; i < thiscount; i++) {
 	    DEBUG(DLEVEL_BUFMGR) {
 		data_show("ubuf", (int*) (info->ubuf + uoff), 5, uoff);
@@ -353,8 +353,9 @@ buf_flush(fdinfo *info)
      *	sbuf     blk#0	  blk#1	      blk#2	blk#3
      */
     soff = 0;
-    for (j = 0; j < info->buflanes; j++) {
-	int	thiscount = (j == info->buflanes - 1) ? info->bufcount: strcnt;
+    for (j = 0; j <= info->buflanes; j++) {
+	int	thiscount = (j == info->buflanes) ? info->bufcount : strcnt;
+	dbgprintf("%s: info->buflanes(%d) info->bufcount(%d)\n", __func__, info->buflanes, info->bufcount);
 	if (Myrank < thiscount) {
 	    off_t	filpos = info->filcurb * blksize;
 	    size_t	sz;
@@ -377,6 +378,7 @@ buf_flush(fdinfo *info)
 		dbgprintf("%s: cc(%ld) blksize(%ld)\n", __func__, cc, blksize);
 		cc = -1ULL;
 	    }
+	    info->filcurb += strcnt;
 	} else {
 	    DEBUG(DLEVEL_BUFMGR) {
 		dbgprintf("No needs to write\n", Myrank);
@@ -384,11 +386,14 @@ buf_flush(fdinfo *info)
 	    cc = strsize;
 	}
 	soff += blksize;
-	info->filcurb += strcnt;
     }
-    if(info->filcurb != info->filtail) {
-	dbgprintf("%s: Something Wrong ???? filcurb(%d) filtail(%d)\n",
-		  __func__, info->filcurb, info->filtail);
+    if (cls == 0) {
+	/* this is called from write system call because the buffer
+	   is full. so filcurb and filtail must be the same position */
+	if(info->filcurb != info->filtail) {
+	    dbgprintf("%s: Something Wrong ???? filcurb(%d) filtail(%d)\n",
+		      __func__, info->filcurb, info->filtail);
+	}
     }
     info->buflanes = 0;
     info->bufcount = 0;
@@ -484,7 +489,7 @@ _iomiddle_close(int fd)
 	DEBUG(DLEVEL_BUFMGR) {
 	    dbgprintf("%s: bufcount(%d)\n", __func__, _inf.fdinfo[fd].bufcount);
 	}
-	sz = buf_flush(info);
+	sz = buf_flush(info, 1);
 	/* FIXME: how this error propagates ? */
 	rc = (sz == _inf.fdinfo[fd].strsize) ? 0 : -1;
 	if (rc == -1) {
@@ -558,15 +563,15 @@ _iomiddle_write(int fd, const void *buf, size_t len)
     }
     if (info->bufcount == _inf.mybufcount) {
 	info->buflanes++;
+	info->filtail += info->strcnt;
 	if (info->buflanes == _inf.mybuflanes) {
-	    rc = buf_flush(info);
+	    rc = buf_flush(info, 0);
 	    if (rc != len) {
 		fprintf(stderr, "%s: ERROR here rc(%ld)\n", __func__, rc);
 	    }
 	} else {
 	    info->bufcount = 0;
 	}
-	info->filtail += info->strcnt;
     }
     if (rc != len) {
 	fprintf(stderr, "%s: ERROR return rc(%ld)\n", __func__, rc);
@@ -580,7 +585,7 @@ _iomiddle_write(int fd, const void *buf, size_t len)
 ssize_t
 _iomiddle_read(int fd, void *buf, size_t len)
 {
-    size_t	rc = len;
+    size_t	cc, rc = len;
     fdinfo *info;
 
     if (dontcare_mode_check(fd, MODE_READ)) {
@@ -595,21 +600,24 @@ _iomiddle_read(int fd, void *buf, size_t len)
 	abort();
     }
     info = &_inf.fdinfo[fd];
-    if (info->bufpos == 0) {
-	int	i, off = 0;
-	size_t	cc;
-
-	//cc = __real_read(info->iofd, info->sbuf, info->bufsize);
-	cc = io_issue(WRK_CMD_READ, info->iofd, info->sbuf, info->bufsize, 0);
+    if (info->lanepos == 0) {
+	cc = io_issue(WRK_CMD_READ, info->iofd, info->sbuf,
+		      info->bufsize*_inf.mybuflanes, 0);
 	if (info->frstrwcall) { /* the first-time read/write call */
 	    cc = info->bufsize; /* return value is zero any cases */
 	    info->frstrwcall = 0;
 	}
 	/* Though read opertaion returns error, other processes may success.
 	 * Thus error is checked after Scatter */
+	info->buflanes = _inf.mybuflanes;
+    }
+    if (info->lanepos < info->buflanes) {
+	int	i, off = 0;
+
 	for (i = 0; i < Nprocs; i++) {
 	    MPI_CALL(
-		MPI_Scatter(info->sbuf, info->strsize, MPI_BYTE,
+		MPI_Scatter(info->sbuf + info->lanepos*info->bufsize,
+			    info->strsize, MPI_BYTE,
 			    info->ubuf + off, info->strsize, MPI_BYTE,
 			    i, MPI_COMM_WORLD));
 	    off += info->strsize;
@@ -624,12 +632,8 @@ _iomiddle_read(int fd, void *buf, size_t len)
 	}
     }
     memcpy(buf, info->ubuf + info->bufpos, len);
-    info->bufpos += len; info->bufcount++;
     info->filpos += len;
-    if (info->bufcount == _inf.mybufcount) {
-	info->bufcount = 0;
-	info->bufpos = 0;
-    }
+    info->lanepos += 1;
 ext:
     return rc;
 }

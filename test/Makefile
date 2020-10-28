@@ -39,9 +39,22 @@ run-test-x86-3-worker:
 	(export LD_PRELOAD=../src/io_middle.so; \
 	 export IOMIDDLE_CARE_PATH=./results; \
 	 export IOMIDDLE_WORKER=1; \
-	$(MPIEXEC) -n 3 ./mytest -l 2 -f ./results/tdata-3)
+	$(MPIEXEC) -n 3 ./mytest -l 8 -f ./results/tdata-3)
 #
-	($(MPIEXEC) -n 3 ./mytest -l 2 -f ./results-nomiddle/tdata-3)
+	($(MPIEXEC) -n 3 ./mytest -l 8 -f ./results-nomiddle/tdata-3)
+run-test-x86-3-wr: # write & read
+#     WRITE
+	rm -f ./results/tdata-3; rm -f ./results-nomiddle/tdata-3
+	(export LD_PRELOAD=../src/io_middle.so; \
+	 export IOMIDDLE_CARE_PATH=./results; \
+	 export IOMIDDLE_WORKER=1; \
+	$(MPIEXEC) -n 2 ./mytest -l 3 -f ./results/tdata-3)
+#     READ
+#	(export LD_PRELOAD=../src/io_middle.so; \
+#	 export IOMIDDLE_CARE_PATH=./results; \
+#	 export IOMIDDLE_WORKER=1; \
+#	$(MPIEXEC) -n 3 ./mytest -l 8 -r -f ./results/tdata-3)
+#
 run-test-x86-3-trunc:
 	($(MPIEXEC) -n 3 ./mytest -l 4 -f ./results/tdata-3)
 	(export LD_PRELOAD=../src/io_middle.so; \
