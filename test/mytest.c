@@ -99,7 +99,9 @@ do_write(char *fnm, off64_t offset, void *bufp, size_t bufsiz)
 	}
 	sz = write_stripe(fd, bufp, strsize, pos);
 	if (sz != strsize) {
-	    myprintf("Write size = %ld, not %ld\n", sz, strsize);
+	    char buf[1024];
+	    snprintf(buf, 1024, "Write size = %ld, not %ld\n", sz, strsize);
+	    perror(buf);
 	}
 	pos += strsize*nprocs;
     }
@@ -205,8 +207,11 @@ main(int argc, char **argv)
 		bw = tot_fsize/eltime;
 		myprintf("\tWrite: \n"
 			 "\t   Time: %12.9f second\n"
-			 "\t     BW: %12.9f MiB/sec\n",
-			 (float) eltime, (float) bw);
+			 "\t     BW: %12.9f GiB/sec\n",
+			 (float) eltime, (float) (bw/1024.));
+		/* GiB/sec */
+		myprintf("\n@write,%d,%12.9f\n",
+			 nprocs, (float) (bw/1024.));
 	    }
 	    if (rwflag & DO_READ) {
 		eltime = TIMER_SECOND(timer_et[1] - timer_st[1]);
@@ -215,6 +220,9 @@ main(int argc, char **argv)
 			 "\t   Time: %12.9f second\n"
 			 "\t     BW: %12.9f MiB/sec\n",
 			 (float) eltime, (float) bw);
+		/* GiB/sec */
+		myprintf("\n@write,%d,%12.9f\n",
+			 nprocs, (float) (bw/1024.));
 	    }
 	}
     }

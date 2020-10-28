@@ -32,15 +32,17 @@
 typedef struct fdinfo {
     union {
 	struct {
-	    unsigned int notfirst:1,
+	    unsigned int first:1,	/* first lseek/read/write call or not */
+			 frstrwcall:1,	/* first read/write call or not */
 			 dntcare: 1,
 			 trunc: 1,	/* flag of open with O_TRUNC */
 			 rwmode: 2;	/* read or write mode */
 	};
 	int	attrall;
     };
-    int		flags;	   /* flags specified by open/creat */
-    int		mode;	   /* mode specified by open/creat */
+    int		flags;	  /* flags specified by open/creat */
+    int		mode;	  /* mode specified by open/creat */
+    char	*path;	  /* file path */
     int		strsize;  /* stripe size */
     int		strcnt;	  /* stripe count */
     int		bufcount; /* block count */

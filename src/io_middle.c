@@ -38,6 +38,8 @@
 #include <mpi.h>
 #include <limits.h>
 
+#define NO_STRICT_RANK_MAP
+
 static struct ioinfo _inf;
 static char	care_path[PATH_MAX];
 
@@ -142,7 +144,7 @@ info_flagcheck(int flags)
  * flags and mode are values specified by arguments
  */
 static void
-info_init(int fd, int flags, int mode)
+info_init(const char *path, int fd, int flags, int mode)
 {
     fdinfo	*info = &_inf.fdinfo[fd];
 
@@ -155,13 +157,21 @@ info_init(int fd, int flags, int mode)
     info->flags    = flags;
     info->mode   = mode;
     info->trunc = (((flags|mode) & O_TRUNC) == O_TRUNC);
+
+    info->path = malloc(strlen(path) + 1);
+    if (info->path == NULL) {
+	dbgprintf("%s Cannot allocate memory, size=\n", __func__, strlen(path));
+	abort();
+    }
+    strcpy(info->path, path);
 }
 
 static void
 buf_init(int fd, int strsize)
 {
     int	strcnt = Nprocs;
-    _inf.fdinfo[fd].notfirst = 1;
+    _inf.fdinfo[fd].first = 1;
+    _inf.fdinfo[fd].frstrwcall = 1;
     _inf.fdinfo[fd].strsize = strsize;
     _inf.fdinfo[fd].strcnt = strcnt;
     _inf.fdinfo[fd].filoff = _inf.fdinfo[fd].strsize*Myrank;
@@ -201,13 +211,30 @@ dontcare_mode_check(int fd, int mode)
 
 /*
  *  Stripe size is checked or determined
+ *	called by lseek/read/write
  */
 static inline int
 stripe_check_init(int fd, size_t len, int lseek)
 {
+    int	strsize = 0;
+
+#ifdef NO_STRICT_RANK_MAP
+    if (_inf.fdinfo[fd].first) {
+	if (Myrank == 0) {
+	    strsize = 0;
+	} else {
+	    strsize = lseek/Myrank;
+	}
+	buf_init(fd, strsize);
+    } else {
+	IOMIDDLE_IFERROR(lseek && (strsize != _inf.fdinfo[fd].strsize),
+			 "lseek (%ld) is issued but must be %ld\n",
+			 _inf.fdinfo[fd].strsize);
+    }
+    return 0;
+#else
     int	rc = 0;
-    int	strsize;
-    if (!_inf.fdinfo[fd].notfirst) {
+    if (_inf.fdinfo[fd].first) {
 	if (lseek) {
 	    if (Myrank == 0) {
 		IOMIDDLE_IFERROR((len != 0),
@@ -240,6 +267,7 @@ stripe_check_init(int fd, size_t len, int lseek)
     }
 ext:
     return rc;
+#endif
 }
 
 static inline size_t
@@ -247,9 +275,15 @@ io_write(int fd, void *buf, size_t size, off64_t pos)
 {
     size_t	sz;
 
-    sz = pwrite(fd, buf, size, pos);
-    // __real_lseek64(info->iofd, filpos, SEEK_SET);
-    // sz = __real_write(info->iofd, info->sbuf, blksize);
+    //sz = pwrite(fd, buf, size, pos);
+    __real_lseek64(fd, pos, SEEK_SET);
+    sz = __real_write(fd, buf, size);
+    if (sz ==  -1ULL || sz < size) {
+	char buf[1024];
+	snprintf(buf, 1024, "%s: fd(%d) size(%ld) pos(%ld) path=%s",
+		 __func__, fd, size, pos, _inf.fdinfo[fd].path);
+	perror(buf);
+    }
 
     return sz;
 }
@@ -307,7 +341,6 @@ buf_flush(fdinfo *info)
      *	sbuf     blk#0	  blk#1	      blk#2	blk#3
      */
     if (Myrank < info->bufcount) {
-	size_t	sz;
 	off_t	filpos = info->filcurb * blksize;
 
 	DEBUG(DLEVEL_BUFMGR) {
@@ -319,19 +352,23 @@ buf_flush(fdinfo *info)
 		data_show("sbuf", (int*) (info->sbuf + i), 5, i);
 	    }
 	}
-	sz = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf, blksize, filpos);
-	//sz = io_write(info->iofd, info->sbuf, blksize, filpos);
-	if (sz < blksize) {
-	    cc = -1ULL;
-	} else {
+	cc = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf, blksize, filpos);
+	if (info->frstrwcall) {
+	    /* incase of the first read/write, return value might be zero */
 	    cc = strsize;
+	    info->frstrwcall = 0;
+	} else if (cc != strsize) {
+	    dbgprintf("%s: cc(%ld) blksize(%ld)\n", __func__, cc, blksize);
+	    cc = -1ULL;
 	}
     } else {
 	DEBUG(DLEVEL_BUFMGR) {
 	    dbgprintf("No needs to write\n", Myrank);
 	}
+	//fprintf(stderr, "No needs to write\n", stderr);
 	cc = strsize;
     }
+//    if (cc != strsize) fprintf(stderr, "%s: ERROR rc(%ld)\n", __func__, cc);
     if(info->filcurb != info->filtail) {
 	dbgprintf("%s: Something Wrong ???? filcurb(%d) filtail(%d)\n",
 		  __func__, info->filcurb, info->filtail);
@@ -360,7 +397,7 @@ _iomiddle_creat(const char* path, mode_t mode)
     }
     fd = __real_creat(path, mode);
     if (fd >= 0) {
-	info_init(fd, 0, mode);
+	info_init(path, fd, 0, mode);
     }
     return fd;
 }
@@ -393,17 +430,17 @@ _iomiddle_open(const char *path, int flags, ...)
     }
     if (fd < 0) goto err;
     if (dont_care) {
-	_inf.fdinfo[fd].notfirst = 1;
+	_inf.fdinfo[fd].first = 1;
 	_inf.fdinfo[fd].dntcare = 1;
     } else {
-	fprintf(stderr, "[%d] open() DO-CARE file fd(%d) path(%s)\n",
-		Myrank, fd, path);
+	//fprintf(stderr, "[%d] open() DO-CARE file fd(%d) path(%s)\n",
+	//Myrank, fd, path);
 	DEBUG(DLEVEL_HIJACKED|DLEVEL_CONFIRM) {
-	    fprintf(stderr, "[%d] open() DO-CARE file fd(%d) path(%s)\n",
-		    Myrank, fd, path);
+	    dbgprintf("[%d] open() DO-CARE file fd(%d) path(%s)\n",
+		      Myrank, fd, path);
 	}
 	worker_init();
-	info_init(fd, flags, mode);
+	info_init(path, fd, flags, mode);
 	io_init(Wenbflg, fd);
     }
 err:
@@ -434,7 +471,12 @@ _iomiddle_close(int fd)
 	sz = buf_flush(info);
 	/* FIXME: how this error propagates ? */
 	rc = (sz == _inf.fdinfo[fd].strsize) ? 0 : -1;
+	if (rc == -1) {
+	    dbgprintf("%s: ERROR sz = %ld\n", __func__, sz);
+	}
     }
+    /* io_fin() first to synchronize worker */
+    io_fin(fd);
     if (_inf.reqtrunc && info->trunc) {
 	off64_t	filpos = info->filpos;
 	if (Myrank == 0) {
@@ -460,7 +502,6 @@ _iomiddle_close(int fd)
     free(info->sbuf);
     info->ubuf = 0;
     info->sbuf = 0;
-    io_fin(fd);
     return rc;
 }
 
@@ -499,11 +540,12 @@ _iomiddle_write(int fd, const void *buf, size_t len)
     }
     if (info->bufcount == _inf.mybufcount) {
 	rc = buf_flush(info);
-	if (rc == -1) goto ext;
+	if (rc != len) {
+	    fprintf(stderr, "%s: ERROR here rc(%ld)\n", __func__, rc);
+	}
     }
- ext:
-    if (rc == info->filblklen) {
-	rc = len;
+    if (rc != len) {
+	fprintf(stderr, "%s: ERROR return rc(%ld)\n", __func__, rc);
     }
     return rc;
 }
@@ -535,6 +577,10 @@ _iomiddle_read(int fd, void *buf, size_t len)
 
 	//cc = __real_read(info->iofd, info->sbuf, info->bufsize);
 	cc = io_issue(WRK_CMD_READ, info->iofd, info->sbuf, info->bufsize, 0);
+	if (info->frstrwcall) { /* the first-time read/write call */
+	    cc = info->bufsize; /* return value is zero any cases */
+	    info->frstrwcall = 0;
+	}
 	/* Though read opertaion returns error, other processes may success.
 	 * Thus error is checked after Scatter */
 	for (i = 0; i < Nprocs; i++) {
@@ -732,8 +778,8 @@ _myhijack_init()
     memset(_inf.fdinfo, 0, sz);
     /* Checking don't care fd's */
     for (i = 0; i < 3; i++) {
-	_inf.fdinfo[i].notfirst = 1;
 	_inf.fdinfo[i].dntcare = 1;
+	_inf.fdinfo[i].first = 0;
     }
 
     /* worker is created and initialized */
@@ -766,8 +812,11 @@ io_workerfin(int fd, void *buf, size_t size, off64_t pos)
 static inline void
 worker_sigdone(size_t sz)
 {
-    Wcmd = WRK_CMD_DONE;
+    DEBUG(DLEVEL_WORKER) {
+	dbgprintf("%s: cmd(%s) sz(%ld)\n", __func__, (Wcmd == WRK_CMD_WRITE) ? "WRITE" : "READ", sz);
+    }
     Wcret = sz;
+    Wcmd = WRK_CMD_DONE;
     pthread_mutex_unlock(&Wmtx);
     pthread_cond_signal(&Wcnd);
 }
@@ -846,7 +895,7 @@ io_issue(size_t (*cmd)(int, void*, size_t, off64_t),
 {
     size_t	sz;
     DEBUG(DLEVEL_WORKER) {
-	dbgprintf("%s: cmd(%p) fd(%d) buf(%p) size(%ld) pos(%ld)\n",
+	dbgprintf("%s: cmd(%s) fd(%d) buf(%p) size(%ld) pos(%ld)\n",
 		  __func__, (cmd == WRK_CMD_WRITE) ? "WRITE": "READ", fd, buf, size, pos);
     }
     if (Wenable && Wcfd == _inf.fdinfo[fd].iofd) {
@@ -860,7 +909,11 @@ io_issue(size_t (*cmd)(int, void*, size_t, off64_t),
 	DEBUG(DLEVEL_WORKER) {
 	    dbgprintf("%s: requesting. prev ret(%ld)\n", __func__, Wcret);
 	}
-	/* The return value is the last operation */
+	/*
+	 * The return value is the last operation. Be sure that the return
+	 * value of the first call is always 0.
+	 * The client must care of this condition.
+	 */
 	sz = Wcret;
 	Wcmd = cmd; Wcbuf = buf; Wcsiz = size; Wcpos = pos;
 	pthread_mutex_unlock(&Wmtx);
@@ -894,6 +947,7 @@ io_init(int is_worker_enable, int fd)
 	return;
     }
     if (is_worker_enable) {
+	//fprintf(stderr, "%s: Initialize for fd=%d worker(%d)\n", __func__, fd, is_worker_enable);
 	dbgprintf("%s: Initialize for fd=%d worker(%d)\n", __func__, fd, is_worker_enable);
 	Wcmd = WRK_CMD_DONE;
 	Wcfd = fd;
