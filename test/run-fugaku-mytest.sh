@@ -5,11 +5,11 @@
 #PJM --spath "results-middle/%n.%j.stat"
 #PJM -o "results-middle/%n.%j.out"
 #PJM -e "results-middle/%n.%j.err"
-#PJM -L "node=3"
+#	PJM -L "node=3"
 #	PJM -L "node=2"
 #	PJM -L "node=3"
 #	PJM -L "node=16"
-#	PJM -L "node=64"
+#PJM -L "node=64"
 #	PJM -L "node=96"
 #	PJM -L "node=384"
 #	PJM -L "node=768"
@@ -19,16 +19,16 @@
 #PJM -L "elapse=00:05:00"
 #	PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-huge1,jobenv=linux"
 #PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-sin,jobenv=linux"
-#	PJM -L proc-core=unlimited
+#PJM -L proc-core=unlimited
 #export XOS_MMM_L_HPAGE_TYPE=none
 
-###MPIOPT="-of ./results-middle/%n.%j.out"
+MPIOPT="-of ./results-middle/%n.%j.out"
 
 #PJM --llio cn-read-cache=off
 #PJM --llio sio-read-cache=off
 #PJM --llio cn-cached-write-size=0
 #	PJM --llio stripe-count=24
-#	PJM --llio stripe-count=6
+#PJM --llio stripe-count=6
 #PJM --llio sharedtmp-size=95258Mi
 #PJM --llio localtmp-size=0
 #PJM --llio cn-cache-size=128Mi
@@ -38,13 +38,20 @@
 #PJM --llio auto-readahead=on
 #	PJM --llio perf
 
-export IOMIDDLE_CARE_PATH=/share/tmp/
 export LD_PRELOAD=../src/io_middle.so
-mpiexec ./mytest -l 6 -f /share/tmp/tdata-2
+export IOMIDDLE_WORKER=1
+export IOMIDDLE_LANES=4
+
+export IOMIDDLE_CARE_PATH=./results-middle/
+mpiexec $MPIOPT ./mytest -l 3000 -f ./results-middle/tdata-3
+printenv
 exit
 
 mkdir /share/tmp/
-df -h /share/tmp/
+export IOMIDDLE_CARE_PATH=/share/tmp/
+mpiexec ./mytest -l 6 -f /share/tmp/tdata-2
+exit
+
 #ls -ld /share/tmp/
 #echo "hello" >/share/tmp/hello
 #ls -l /share/tmp/
@@ -58,6 +65,7 @@ export LD_PRELOAD=../src/io_middle.so
 #export IOMIDDLE_DEBUG=8
 
 export IOMIDDLE_WORKER=1
+export IOMIDDLE_LANES=4
 
 mpiexec ./mytest -l 160 -f /share/tmp/tdata-2
 
