@@ -32,8 +32,9 @@
 typedef struct fdinfo {
     union {
 	struct {
-	    unsigned int first:1,	/* first lseek/read/write call or not */
+	    unsigned int notfirst:1,	/* not first lseek/read/write call */
 			 frstrwcall:1,	/* first read/write call or not */
+			 rslvstr:1,     /* needs to resolve stripe size */
 			 dntcare: 1,
 			 trunc: 1,	/* flag of open with O_TRUNC */
 			 rwmode: 2;	/* read or write mode */

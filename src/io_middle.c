@@ -38,8 +38,6 @@
 #include <mpi.h>
 #include <limits.h>
 
-#define NO_STRICT_RANK_MAP
-
 static struct ioinfo _inf;
 static char	care_path[PATH_MAX];
 
@@ -170,7 +168,7 @@ static void
 buf_init(int fd, int strsize)
 {
     int	strcnt = Nprocs;
-    _inf.fdinfo[fd].first = 1;
+    _inf.fdinfo[fd].notfirst = 1;
     _inf.fdinfo[fd].frstrwcall = 1;
     _inf.fdinfo[fd].strsize = strsize;
     _inf.fdinfo[fd].strcnt = strcnt;
@@ -218,23 +216,23 @@ stripe_check_init(int fd, size_t len, int lseek)
 {
     int	strsize = 0;
 
-#ifdef NO_STRICT_RANK_MAP
-    if (_inf.fdinfo[fd].first) {
-	if (Myrank == 0) {
-	    strsize = 0;
-	} else {
-	    strsize = lseek/Myrank;
+    if (!_inf.fdinfo[fd].notfirst) {
+	if (lseek) {
+	    if (Myrank != 0) {
+		strsize = len/Myrank;
+	    }
+	} else { /* read/write */
+	    strsize = len;
 	}
-	buf_init(fd, strsize);
-    } else {
-	IOMIDDLE_IFERROR(lseek && (strsize != _inf.fdinfo[fd].strsize),
-			 "lseek (%ld) is issued but must be %ld\n",
-			 _inf.fdinfo[fd].strsize);
+	if (strsize != 0) {
+	    buf_init(fd, strsize);
+	}
     }
     return 0;
-#else
+
+#ifdef STRICT_RANK_MAP
     int	rc = 0;
-    if (_inf.fdinfo[fd].first) {
+    if (!_inf.fdinfo[fd].notfirst) {
 	if (lseek) {
 	    if (Myrank == 0) {
 		IOMIDDLE_IFERROR((len != 0),
@@ -430,7 +428,7 @@ _iomiddle_open(const char *path, int flags, ...)
     }
     if (fd < 0) goto err;
     if (dont_care) {
-	_inf.fdinfo[fd].first = 1;
+	_inf.fdinfo[fd].notfirst = 1;
 	_inf.fdinfo[fd].dntcare = 1;
     } else {
 	//fprintf(stderr, "[%d] open() DO-CARE file fd(%d) path(%s)\n",
@@ -514,6 +512,7 @@ _iomiddle_write(int fd, const void *buf, size_t len)
 {
     size_t	rc = len;
     fdinfo	*info;
+
     if (dontcare_mode_check(fd, MODE_WRITE)) {
 	rc = __real_write(fd, buf, len);
 	return rc;
@@ -527,6 +526,7 @@ _iomiddle_write(int fd, const void *buf, size_t len)
 	DEBUG(DLEVEL_HIJACKED) { info_show(fd, __func__); }
 	abort();
     }
+
     IOMIDDLE_IFERROR((len != info->strsize),
 		     "write length must be the stripe size. "
 		     "len(%ld) stripe size(%d)\n", len, info->strsize);
@@ -614,6 +614,7 @@ static off64_t
 lseek_general(int fd, off64_t reqfilpos)
 {
     off64_t	rc;
+
     /* if this call is issued prior to read/write.
      * rqfilpos must be equal to stripe size. */
     if (stripe_check_init(fd, reqfilpos, 1)) {
@@ -779,7 +780,7 @@ _myhijack_init()
     /* Checking don't care fd's */
     for (i = 0; i < 3; i++) {
 	_inf.fdinfo[i].dntcare = 1;
-	_inf.fdinfo[i].first = 0;
+	_inf.fdinfo[i].notfirst = 1;
     }
 
     /* worker is created and initialized */
