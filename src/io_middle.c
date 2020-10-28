@@ -340,6 +340,7 @@ buf_flush(fdinfo *info)
      */
     if (Myrank < info->bufcount) {
 	off_t	filpos = info->filcurb * blksize;
+	size_t	sz;
 
 	DEBUG(DLEVEL_BUFMGR) {
 	    dbgprintf("writing size(%ld) filpos(%ld) "
@@ -350,12 +351,12 @@ buf_flush(fdinfo *info)
 		data_show("sbuf", (int*) (info->sbuf + i), 5, i);
 	    }
 	}
-	cc = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf, blksize, filpos);
-	if (info->frstrwcall) {
+	sz = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf, blksize, filpos);
+	if (info->frstrwcall || sz == blksize) {
 	    /* incase of the first read/write, return value might be zero */
 	    cc = strsize;
 	    info->frstrwcall = 0;
-	} else if (cc != strsize) {
+	} else {
 	    dbgprintf("%s: cc(%ld) blksize(%ld)\n", __func__, cc, blksize);
 	    cc = -1ULL;
 	}
@@ -470,7 +471,7 @@ _iomiddle_close(int fd)
 	/* FIXME: how this error propagates ? */
 	rc = (sz == _inf.fdinfo[fd].strsize) ? 0 : -1;
 	if (rc == -1) {
-	    dbgprintf("%s: ERROR sz = %ld\n", __func__, sz);
+	    dbgprintf("%s: ERROR sz = %ld (frstrwcall=%d strsize(%ld))\n", __func__, sz, _inf.fdinfo[fd].frstrwcall, _inf.fdinfo[fd].strsize);
 	}
     }
     /* io_fin() first to synchronize worker */
