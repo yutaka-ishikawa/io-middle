@@ -25,6 +25,15 @@ run-test-x86-3:
 #
 	($(MPIEXEC) -n 3 ./mytest -l 4 -f ./results-nomiddle/tdata-3)
 #
+run-test-x86-3-mlanes:
+	rm -f ./results/tdata-3; rm -f ./results-nomiddle/tdata-3
+	(export LD_PRELOAD=../src/io_middle.so; \
+	 export IOMIDDLE_CARE_PATH=./results; \
+	 export IOMIDDLE_LANES=2; \
+	$(MPIEXEC) -n 3 ./mytest -l 10 -f ./results/tdata-3)
+#
+	($(MPIEXEC) -n 3 ./mytest -l 10 -f ./results-nomiddle/tdata-3)
+#
 run-test-x86-3-worker:
 	rm -f ./results/tdata-3; rm -f ./results-nomiddle/tdata-3
 	(export LD_PRELOAD=../src/io_middle.so; \

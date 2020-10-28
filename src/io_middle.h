@@ -46,8 +46,9 @@ typedef struct fdinfo {
     char	*path;	  /* file path */
     int		strsize;  /* stripe size */
     int		strcnt;	  /* stripe count */
-    int		bufcount; /* block count */
-    size_t	bufsize;  /* */
+    int		buflanes; /* number of stripes */
+    int		bufcount; /* one stripe (== stripe count) */
+    size_t	bufsize;  /* total size */
     int		iofd;	  /* file descriptor */
     int		filoff;   /* offset of file */
     int		filcurb;  /* start block# must be written */
@@ -64,6 +65,7 @@ struct ioinfo {
     int		aio;
     int		nprocs;
     int		rank;
+    int		mybuflanes;
     int		mybufcount;
     int		reqtrunc;
     uint64_t	fdlimit;

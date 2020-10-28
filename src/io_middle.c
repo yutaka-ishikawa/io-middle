@@ -14,7 +14,13 @@
  *	IOMIDDLE_CARE_PATH 
  *	   -- file path taken care by this middleware.
  *	     The user must specify this variable.
- *	IOMIDDLE_TRUNC
+ *	IOMIDDLE_LANES
+ *	   -- Speficfy the number of lanes.
+ *	     one lane is (stripsize * stripe count)
+ *	IOMIDDLE_WORKER
+ *	   -- if specify, asynchronous I/O read/writer is performed 
+ *	      by a worker thread.
+ *	IOMIDDLE_TUNC
  *	   -- if specify, enable global file truncation at the close time.
  *	      Note that this behavior is different than POSIX,
  *	      because procccesses independently close a file descriptor
@@ -168,21 +174,24 @@ static void
 buf_init(int fd, int strsize)
 {
     int	strcnt = Nprocs;
+
+    _inf.mybufcount = strcnt;
+    /* _inf.mybuflanes = is set by shell environment variable */
     _inf.fdinfo[fd].notfirst = 1;
     _inf.fdinfo[fd].frstrwcall = 1;
     _inf.fdinfo[fd].strsize = strsize;
     _inf.fdinfo[fd].strcnt = strcnt;
     _inf.fdinfo[fd].filoff = _inf.fdinfo[fd].strsize*Myrank;
     _inf.fdinfo[fd].filblklen = strsize * strcnt;
-    _inf.mybufcount = strcnt;
+    _inf.fdinfo[fd].buflanes = 0;
     _inf.fdinfo[fd].bufsize = _inf.fdinfo[fd].filblklen;
-    _inf.fdinfo[fd].ubuf = malloc(_inf.fdinfo[fd].bufsize);
-    _inf.fdinfo[fd].sbuf = malloc(_inf.fdinfo[fd].bufsize);
+    _inf.fdinfo[fd].ubuf = malloc(_inf.fdinfo[fd].bufsize*_inf.mybuflanes);
+    _inf.fdinfo[fd].sbuf = malloc(_inf.fdinfo[fd].bufsize*_inf.mybuflanes);
     IOMIDDLE_IFERROR(
 	(_inf.fdinfo[fd].ubuf == NULL || _inf.fdinfo[fd].sbuf == NULL),
 	"%s", "Cannot allocate IO middleware buffer\n");
-    memset(_inf.fdinfo[fd].ubuf, 0, _inf.fdinfo[fd].bufsize);
-    memset(_inf.fdinfo[fd].sbuf, 0, _inf.fdinfo[fd].bufsize);
+    memset(_inf.fdinfo[fd].ubuf, 0, _inf.fdinfo[fd].bufsize*_inf.mybuflanes);
+    memset(_inf.fdinfo[fd].sbuf, 0, _inf.fdinfo[fd].bufsize*_inf.mybuflanes);
     _inf.fdinfo[fd].filcurb = Myrank;
     _inf.fdinfo[fd].filtail = Myrank;
     DEBUG(DLEVEL_BUFMGR) {
@@ -299,8 +308,9 @@ static size_t
 buf_flush(fdinfo *info)
 {
     size_t	cc = -1ULL;
-    int	i;
-    int off;
+    int	i, j;
+    int uoff, soff;
+    int		strcnt = info->strcnt;
     size_t	strsize = info->strsize;
     size_t	blksize = info->filblklen;
     /*
@@ -308,16 +318,20 @@ buf_flush(fdinfo *info)
      * sbuf : system data buffer
      * ubuf --> sbuf per stripe
      */
-    off = 0;
-    for (i = 0; i < info->bufcount; i++) {
-	DEBUG(DLEVEL_BUFMGR) {
-	    data_show("ubuf", (int*) (info->ubuf + off), 5, off);
+    uoff = 0; soff = 0;
+    for (j = 0; j < info->buflanes; j++) {
+	int	thiscount = (j == info->buflanes - 1) ? info->bufcount: strcnt;
+	for (i = 0; i < thiscount; i++) {
+	    DEBUG(DLEVEL_BUFMGR) {
+		data_show("ubuf", (int*) (info->ubuf + uoff), 5, uoff);
+	    }
+	    MPI_CALL(
+		MPI_Gather(info->ubuf + uoff, strsize, MPI_BYTE,
+			   info->sbuf + soff, strsize, MPI_BYTE,
+			   i, MPI_COMM_WORLD));
+	    uoff += strsize;
 	}
-	MPI_CALL(
-	    MPI_Gather(info->ubuf + off, strsize, MPI_BYTE,
-		       info->sbuf, strsize, MPI_BYTE,
-		       i, MPI_COMM_WORLD));
-	    off += strsize;
+	soff += blksize;
     }
     /*
      * bufcount: # of strips has been written to the buffer
@@ -338,42 +352,45 @@ buf_flush(fdinfo *info)
      *         <------------- Exchange ---------------->
      *	sbuf     blk#0	  blk#1	      blk#2	blk#3
      */
-    if (Myrank < info->bufcount) {
-	off_t	filpos = info->filcurb * blksize;
-	size_t	sz;
+    soff = 0;
+    for (j = 0; j < info->buflanes; j++) {
+	int	thiscount = (j == info->buflanes - 1) ? info->bufcount: strcnt;
+	if (Myrank < thiscount) {
+	    off_t	filpos = info->filcurb * blksize;
+	    size_t	sz;
 
-	DEBUG(DLEVEL_BUFMGR) {
-	    dbgprintf("writing size(%ld) filpos(%ld) "
-		      "curblk#(%d) tailblk#(%d)\n",
-		      info->bufsize, filpos,  info->filcurb, info->filtail);
-	    /* showing one block */
-	    for (i = 0; i < info->bufsize; i += strsize) {
-		data_show("sbuf", (int*) (info->sbuf + i), 5, i);
+	    DEBUG(DLEVEL_BUFMGR) {
+		dbgprintf("writing size(%ld) filpos(%ld) "
+			  "curblk#(%d) tailblk#(%d)\n",
+			  info->bufsize, filpos,  info->filcurb, info->filtail);
+		/* showing one block */
+		for (i = 0; i < info->bufsize; i += strsize) {
+		    data_show("sbuf", (int*) (info->sbuf + soff + i), 5, i);
+		}
 	    }
-	}
-	sz = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf, blksize, filpos);
-	if (info->frstrwcall || sz == blksize) {
-	    /* incase of the first read/write, return value might be zero */
-	    cc = strsize;
-	    info->frstrwcall = 0;
+	    sz = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf + soff, blksize, filpos);
+	    if (info->frstrwcall || sz == blksize) {
+		/* incase of the first read/write, return value might be zero */
+		cc = strsize;
+		info->frstrwcall = 0;
+	    } else {
+		dbgprintf("%s: cc(%ld) blksize(%ld)\n", __func__, cc, blksize);
+		cc = -1ULL;
+	    }
 	} else {
-	    dbgprintf("%s: cc(%ld) blksize(%ld)\n", __func__, cc, blksize);
-	    cc = -1ULL;
+	    DEBUG(DLEVEL_BUFMGR) {
+		dbgprintf("No needs to write\n", Myrank);
+	    }
+	    cc = strsize;
 	}
-    } else {
-	DEBUG(DLEVEL_BUFMGR) {
-	    dbgprintf("No needs to write\n", Myrank);
-	}
-	//fprintf(stderr, "No needs to write\n", stderr);
-	cc = strsize;
+	soff += blksize;
+	info->filcurb += strcnt;
     }
-//    if (cc != strsize) fprintf(stderr, "%s: ERROR rc(%ld)\n", __func__, cc);
     if(info->filcurb != info->filtail) {
 	dbgprintf("%s: Something Wrong ???? filcurb(%d) filtail(%d)\n",
 		  __func__, info->filcurb, info->filtail);
     }
-    info->filcurb += info->strcnt;
-    info->filtail += info->strcnt;
+    info->buflanes = 0;
     info->bufcount = 0;
     info->bufpos = 0;
     return cc;
@@ -540,10 +557,16 @@ _iomiddle_write(int fd, const void *buf, size_t len)
 		  info->bufcount, _inf.mybufcount, len, info->strsize);
     }
     if (info->bufcount == _inf.mybufcount) {
-	rc = buf_flush(info);
-	if (rc != len) {
-	    fprintf(stderr, "%s: ERROR here rc(%ld)\n", __func__, rc);
+	info->buflanes++;
+	if (info->buflanes == _inf.mybuflanes) {
+	    rc = buf_flush(info);
+	    if (rc != len) {
+		fprintf(stderr, "%s: ERROR here rc(%ld)\n", __func__, rc);
+	    }
+	} else {
+	    info->bufcount = 0;
 	}
+	info->filtail += info->strcnt;
     }
     if (rc != len) {
 	fprintf(stderr, "%s: ERROR return rc(%ld)\n", __func__, rc);
@@ -763,6 +786,18 @@ _myhijack_init()
     cp = getenv("IOMIDDLE_WORKER");
     if (cp && atoi(cp) > 0) {
 	Wenbflg = 1;	/* enable flag is set */
+    }
+    cp = getenv("IOMIDDLE_LANES");
+    if (cp) {
+	i = atoi(cp);
+	if (i >= 1) {
+	    _inf.mybuflanes = i;
+	} else {
+	    fprintf(stderr, "IOMIDDLE_LANES must be larger than 0, set it to 1\n");
+	    _inf.mybuflanes = 1;
+	}
+    } else {
+	_inf.mybuflanes = 1;
     }
     DEBUG(DLEVEL_CONFIRM) {
 	printf("IOMIDDLE_CARE_PATH = %s\n", care_path);
