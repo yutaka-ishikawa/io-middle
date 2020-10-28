@@ -576,7 +576,6 @@ _iomiddle_write(int fd, const void *buf, size_t len)
 	info->filtail += info->strcnt;
 	info->buflanes++;
 	if (info->buflanes == _inf.mybuflanes) {
-	    dbgprintf("%s: info->buflanes(%d) info->bufcount(%d)\n", __func__, info->buflanes, info->bufcount);
 	    rc = buf_flush(info, 0);
 	    if (rc != len) {
 		fprintf(stderr, "%s: ERROR here rc(%ld)\n", __func__, rc);
