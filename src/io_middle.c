@@ -318,9 +318,18 @@ buf_flush(fdinfo *info, int cls)
      * sbuf : system data buffer
      * ubuf --> sbuf per stripe
      */
+    /*
+     *  from write: 
+     *  from close: 
+     */
+    if (cls) { /* in order to flush remaining data */
+	info->buflanes += 1;
+    }
+    // dbgprintf("%s: %s j(%d) info->buflanes(%d) info->bufcount(%d)\n",
+    //__func__, cls == 0 ?"WRITE_FLUSH":"CLOSE_FLUSH", j, info->buflanes, info->bufcount);
     uoff = 0; soff = 0;
-    for (j = 0; j <= info->buflanes; j++) {
-	int	thiscount = (j == info->buflanes) ? info->bufcount: strcnt;
+    for (j = 0; j < info->buflanes; j++) {
+	int	thiscount = (j == info->buflanes - 1) ? info->bufcount: strcnt;
 	for (i = 0; i < thiscount; i++) {
 	    DEBUG(DLEVEL_BUFMGR) {
 		data_show("ubuf", (int*) (info->ubuf + uoff), 5, uoff);
@@ -353,9 +362,8 @@ buf_flush(fdinfo *info, int cls)
      *	sbuf     blk#0	  blk#1	      blk#2	blk#3
      */
     soff = 0;
-    for (j = 0; j <= info->buflanes; j++) {
-	int	thiscount = (j == info->buflanes) ? info->bufcount : strcnt;
-	dbgprintf("%s: info->buflanes(%d) info->bufcount(%d)\n", __func__, info->buflanes, info->bufcount);
+    for (j = 0; j < info->buflanes; j++) {
+	int	thiscount = (j == info->buflanes - 1) ? info->bufcount : strcnt;
 	if (Myrank < thiscount) {
 	    off_t	filpos = info->filcurb * blksize;
 	    size_t	sz;
@@ -489,11 +497,14 @@ _iomiddle_close(int fd)
 	DEBUG(DLEVEL_BUFMGR) {
 	    dbgprintf("%s: bufcount(%d)\n", __func__, _inf.fdinfo[fd].bufcount);
 	}
-	sz = buf_flush(info, 1);
-	/* FIXME: how this error propagates ? */
-	rc = (sz == _inf.fdinfo[fd].strsize) ? 0 : -1;
-	if (rc == -1) {
-	    dbgprintf("%s: ERROR sz = %ld (frstrwcall=%d strsize(%ld))\n", __func__, sz, _inf.fdinfo[fd].frstrwcall, _inf.fdinfo[fd].strsize);
+	if (!(info->buflanes == 0 && info->bufcount == 0)) {
+	    sz = buf_flush(info, 1);
+	    /* FIXME: how this error propagates ? */
+	    rc = (sz == _inf.fdinfo[fd].strsize) ? 0 : -1;
+	    if (rc == -1) {
+		dbgprintf("%s: ERROR sz = %ld (frstrwcall=%d strsize(%ld))\n",
+			  __func__, sz, _inf.fdinfo[fd].frstrwcall, _inf.fdinfo[fd].strsize);
+	    }
 	}
     }
     /* io_fin() first to synchronize worker */
@@ -562,9 +573,10 @@ _iomiddle_write(int fd, const void *buf, size_t len)
 		  info->bufcount, _inf.mybufcount, len, info->strsize);
     }
     if (info->bufcount == _inf.mybufcount) {
-	info->buflanes++;
 	info->filtail += info->strcnt;
+	info->buflanes++;
 	if (info->buflanes == _inf.mybuflanes) {
+	    dbgprintf("%s: info->buflanes(%d) info->bufcount(%d)\n", __func__, info->buflanes, info->bufcount);
 	    rc = buf_flush(info, 0);
 	    if (rc != len) {
 		fprintf(stderr, "%s: ERROR here rc(%ld)\n", __func__, rc);
