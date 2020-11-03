@@ -10,6 +10,17 @@ myverify: myverify.o testlib.h testlib.o
 testlib.o: testlib.c testlib.h
 	$(MPICC) $(CFLAGS) -c -o $@ $<
 #
+run-test-all:
+	sh ./run-x86-test-write.sh gen_ref
+	sh ./run-x86-test-write.sh simple
+	sh ./run-x86-test-write.sh multi
+	sh ./run-x86-test-write.sh worker
+	sh ./run-x86-test-write.sh multi-worker
+#
+	sh ./run-x86-test-write.sh verify results-simple
+	sh ./run-x86-test-write.sh verify results-multi
+	sh ./run-x86-test-write.sh verify results-worker
+	sh ./run-x86-test-write.sh verify results-multi-worker
 #
 run-test-x86-2org-r: # read
 	$(MPIEXEC) -n 2 ./mytest -l 4 -r -v -f ./results-nomiddle/tdata-0
