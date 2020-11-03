@@ -196,10 +196,9 @@ buf_init(int fd, int strsize, int frank)
     _inf.fdinfo[fd].filcurb = frank;
     _inf.fdinfo[fd].filtail = frank;
     DEBUG(DLEVEL_BUFMGR) {
-	dbgprintf("%s: strsize = %d\n", __func__, _inf.fdinfo[fd].strsize);
+	dbgprintf("%s: blksize(%d) strsize(%d) strcnt(%d) file_rank(%d)\n", __func__,
+		  _inf.fdinfo[fd].filblklen, _inf.fdinfo[fd].strsize, _inf.fdinfo[fd].strcnt, frank);
     }
-    dbgprintf("%s: blksize(%d) strsize(%d) strcnt(%d) file_rank(%d)\n", __func__,
-	      _inf.fdinfo[fd].filblklen, _inf.fdinfo[fd].strsize, _inf.fdinfo[fd].strcnt, frank);
 }
 
 /*
@@ -208,7 +207,7 @@ buf_init(int fd, int strsize, int frank)
 static inline int
 dontcare_mode_check(int fd, int mode)
 {
-    if (_inf.fdinfo[fd].dntcare || _inf.fdinfo[fd].iofd == 0) {
+    if (_inf.init == 0 || _inf.fdinfo[fd].dntcare || _inf.fdinfo[fd].iofd == 0) {
 	return 1;
     }
     if (_inf.fdinfo[fd].rwmode == MODE_UNKNOWN) {
@@ -244,7 +243,9 @@ stripe_check_init(int fd, size_t len, int lseek)
 	    frank = len/strsize;
 	    buf_init(fd, strsize, frank);
 	}
-	dbgprintf("%s: strsize(%d) file_rank(%d) len(%ld)\n", __func__, strsize, frank, len);
+	DEBUG(DLEVEL_BUFMGR) {
+	    dbgprintf("%s: strsize(%d) file_rank(%d) len(%ld)\n", __func__, strsize, frank, len);
+	}
     }
     return 0;
 
@@ -338,8 +339,10 @@ buf_flush(fdinfo *info, int cls)
     if (cls) { /* in order to flush remaining data */
 	info->buflanes += 1;
     }
-    dbgprintf("%s: %s info->buflanes(%d) info->bufcount(%d) strcnt(%d)\n",
-	      __func__, cls == 0 ?"WRITE_FLUSH":"CLOSE_FLUSH", info->buflanes, info->bufcount, strcnt);
+    DEBUG(DLEVEL_BUFMGR) {
+	dbgprintf("%s: %s info->buflanes(%d) info->bufcount(%d) strcnt(%d)\n",
+		  __func__, cls == 0 ?"WRITE_FLUSH":"CLOSE_FLUSH", info->buflanes, info->bufcount, strcnt);
+    }
     uoff = 0; soff = 0;
     for (j = 0; j < info->buflanes; j++) {
 	int	thiscount = (j == info->buflanes - 1) ? info->bufcount: strcnt;
@@ -377,7 +380,9 @@ buf_flush(fdinfo *info, int cls)
     soff = 0;
     for (j = 0; j < info->buflanes; j++) {
 	int	thiscount = (j == info->buflanes - 1) ? info->bufcount : strcnt;
-	dbgprintf("%s: thiscount(%d) blksize(%d) filcurb(%d)\n", __func__, thiscount, blksize, info->filcurb);
+	DEBUG(DLEVEL_BUFMGR) {
+	    dbgprintf("%s: thiscount(%d) blksize(%d) filcurb(%d)\n", __func__, thiscount, blksize, info->filcurb);
+	}
 	if (Myrank < thiscount) {
 	    off_t	filpos = info->filcurb * blksize;
 	    size_t	sz;
@@ -391,14 +396,18 @@ buf_flush(fdinfo *info, int cls)
 		    data_show("sbuf", (int*) (info->sbuf + soff + i), 5, i);
 		}
 	    }
-	    dbgprintf("\t writing soff(%d) blksize(%d) filpos(%d)\n", soff, blksize, filpos);
+	    DEBUG(DLEVEL_BUFMGR) {
+		dbgprintf("\t writing soff(%d) blksize(%d) filpos(%d)\n", soff, blksize, filpos);
+	    }
 	    sz = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf + soff, blksize, filpos);
 	    if (info->frstrwcall || sz == blksize) {
 		/* incase of the first read/write, return value might be zero */
 		cc = strsize;
 		info->frstrwcall = 0;
 	    } else {
-		dbgprintf("%s: cc(%ld) blksize(%ld)\n", __func__, cc, blksize);
+		DEBUG(DLEVEL_BUFMGR) {
+		    dbgprintf("%s: cc(%ld) blksize(%ld)\n", __func__, cc, blksize);
+		}
 		cc = -1ULL;
 	    }
 	    info->filcurb += strcnt;
@@ -425,6 +434,7 @@ _iomiddle_creat(const char* path, mode_t mode)
 {
     int	fd;
 
+    // fprintf(stderr, "%s: YI*** invoked\n", __func__);
     if (is_dont_care_path(path)) {
 	fd = __real_creat(path, mode);
 	return fd;
@@ -434,6 +444,11 @@ _iomiddle_creat(const char* path, mode_t mode)
     }
     fd = __real_creat(path, mode);
     if (fd >= 0) {
+	if (_inf.init == 0) {
+	    extern void	_myhijack_ini2();
+	    _myhijack_ini2();
+	    _inf.init = 1;
+	}
 	info_init(path, fd, 0, mode);
     }
     return fd;
@@ -460,9 +475,19 @@ _iomiddle_open(const char *path, int flags, ...)
     }
     if (dont_care) {
 	fd = __real_open(path, flags, mode);
+	if (_inf.init == 0) { /* still don't care */
+	    return fd;
+	}
     } else {
-	int umode  = info_flagcheck(mode);
-	int uflags = info_flagcheck(flags);
+	int umode, uflags;
+
+	if (_inf.init == 0) {
+	    extern void	_myhijack_ini2();
+	    _myhijack_ini2();
+	    _inf.init = 1;
+	}
+	umode  = info_flagcheck(mode);
+	uflags = info_flagcheck(flags);
 	fd = __real_open(path, uflags, umode);
     }
     if (fd < 0) goto err;
@@ -493,8 +518,9 @@ _iomiddle_close(int fd)
     int	rc = 0;
     fdinfo	*info;
 
+    // fprintf(stderr, "%s: YI*** invoked fd(%d)\n", __func__, fd);
     /* file dscriptor 0 is never used */
-    if (_inf.fdinfo[fd].dntcare || _inf.fdinfo[fd].iofd == 0) {
+    if (_inf.init == 0 || _inf.fdinfo[fd].dntcare || _inf.fdinfo[fd].iofd == 0) {
 	rc = __real_close(fd);
 	return rc;
     }
@@ -555,6 +581,7 @@ _iomiddle_write(int fd, const void *buf, size_t len)
     size_t	rc = len;
     fdinfo	*info;
 
+    // fprintf(stderr, "%s: invoked\n", __func__);
     if (dontcare_mode_check(fd, MODE_WRITE)) {
 	rc = __real_write(fd, buf, len);
 	return rc;
@@ -568,8 +595,9 @@ _iomiddle_write(int fd, const void *buf, size_t len)
 	DEBUG(DLEVEL_HIJACKED) { info_show(fd, __func__); }
 	abort();
     }
-
-    dbgprintf("%s filcurb(%d)\n", __func__, info->filcurb);
+    DEBUG(DLEVEL_BUFMGR) {
+	dbgprintf("%s filcurb(%d)\n", __func__, info->filcurb);
+    }
     IOMIDDLE_IFERROR((len != info->strsize),
 		     "write length must be the stripe size. "
 		     "len(%ld) stripe size(%d)\n", len, info->strsize);
@@ -584,9 +612,14 @@ _iomiddle_write(int fd, const void *buf, size_t len)
     }
     if (info->bufcount == _inf.mybufcount) {
 	info->buflanes++;
-	dbgprintf("%s: info->buflanes(%d) mybuflanes(%d)\n", __func__, info->buflanes, _inf.mybuflanes);
+	DEBUG(DLEVEL_BUFMGR) {
+	    dbgprintf("%s: info->buflanes(%d) mybuflanes(%d)\n", __func__, info->buflanes, _inf.mybuflanes);
+	}
 	if (info->buflanes == _inf.mybuflanes) {
-	    dbgprintf("%s: Goging to flush info->buflanes(%d) info->bufcount(%d)\n", __func__, info->buflanes, info->bufcount);
+	    DEBUG(DLEVEL_BUFMGR) {
+		dbgprintf("%s: Goging to flush info->buflanes(%d) info->bufcount(%d)\n",
+			  __func__, info->buflanes, info->bufcount);
+	    }
 	    rc = buf_flush(info, 0);
 	    if (rc != len) {
 		fprintf(stderr, "%s: ERROR here rc(%ld)\n", __func__, rc);
@@ -600,7 +633,6 @@ _iomiddle_write(int fd, const void *buf, size_t len)
     if (rc != len) {
 	fprintf(stderr, "%s: ERROR return rc(%ld)\n", __func__, rc);
     }
-    dbgprintf("\t %s return filcurb(%d)\n", __func__, info->filcurb);
     return rc;
 }
 
@@ -613,6 +645,7 @@ _iomiddle_read(int fd, void *buf, size_t len)
     size_t	cc, rc = len;
     fdinfo *info;
 
+    // fprintf(stderr, "%s: YI*** invoked fd(%d)\n", __func__, fd); 
     if (dontcare_mode_check(fd, MODE_READ)) {
 	rc = __real_read(fd, buf, len);
 	return rc;
@@ -689,7 +722,6 @@ lseek_general(int fd, off64_t reqfilpos)
 			 " (blks(%d) tailblks(%d))\n",
 			 reqfilpos, blks, _inf.fdinfo[fd].filtail);
     }
-    dbgprintf("%s: reqfilpos(%ld) filcurb(%ld)\n", __func__, reqfilpos, info->filcurb);
     return rc;
 }
 
@@ -702,7 +734,8 @@ _iomiddle_lseek(int fd, off_t offset, int whence)
     off_t	rc = 0;
     off_t	reqfilpos;
 
-    if (_inf.fdinfo[fd].dntcare || _inf.fdinfo[fd].iofd == 0) {
+    // fprintf(stderr, "%s: YI*** invoked\n", __func__);    
+    if (_inf.init == 0 || _inf.fdinfo[fd].dntcare || _inf.fdinfo[fd].iofd == 0) {
 	rc = __real_lseek(fd, offset, whence);
 	return rc;
     }
@@ -737,7 +770,8 @@ _iomiddle_lseek64(int fd, off64_t offset, int whence)
     off64_t	rc = 0;
     off64_t	reqfilpos;
 
-    if (_inf.fdinfo[fd].dntcare || _inf.fdinfo[fd].iofd == 0) {
+    // fprintf(stderr, "%s: YI*** invoked\n", __func__);    
+    if (_inf.init == 0 || _inf.fdinfo[fd].dntcare || _inf.fdinfo[fd].iofd == 0) {
 	rc = __real_lseek64(fd, offset, whence);
 	return rc;
     }
@@ -775,11 +809,9 @@ _iomiddle_lseek64(int fd, off64_t offset, int whence)
 void
 _myhijack_init()
 {
-    int	i;
-    char	*cp;
-    struct rlimit rlim;
-    size_t	sz;
+    char *cp;
 
+    /* here we do not call any library calls except getenv() and strcpy() */
     cp = getenv("IOMIDDLE_DISABLE");
     if (cp && atoi(cp) == 1) {
 	fprintf(stderr, "%s: init is called. diabled\n", __func__);
@@ -796,6 +828,26 @@ _myhijack_init()
 	printf("IOMIDDLE_CARE_PATH must be specified\n");
 	exit(-1);
     }
+    _inf.init = 0;
+    /* here are hijacked system call registration */
+    _hijacked_creat = _iomiddle_creat;
+    _hijacked_open = _iomiddle_open;
+    _hijacked_close = _iomiddle_close;
+    _hijacked_read = _iomiddle_read;
+    _hijacked_lseek = _iomiddle_lseek;
+    _hijacked_lseek64 = _iomiddle_lseek64;
+    _hijacked_write = _iomiddle_write;
+}
+
+void
+_myhijack_ini2()
+{
+    int	i;
+    char	*cp;
+    struct rlimit rlim;
+    size_t	sz;
+
+    // fprintf(stderr, "%s: YI!!!! invoked\n", __func__);
     cp = getenv("IOMIDDLE_TRUNC");
     if (cp && atoi(cp) > 0) {
 	_inf.reqtrunc = 1;
@@ -835,17 +887,6 @@ _myhijack_init()
 	_inf.fdinfo[i].dntcare = 1;
 	_inf.fdinfo[i].notfirst = 1;
     }
-
-    /* worker is created and initialized */
-    //worker_init();
-    /* here are hijacked system call registration */
-    _hijacked_creat = _iomiddle_creat;
-    _hijacked_open = _iomiddle_open;
-    _hijacked_close = _iomiddle_close;
-    _hijacked_read = _iomiddle_read;
-    _hijacked_lseek = _iomiddle_lseek;
-    _hijacked_lseek64 = _iomiddle_lseek64;
-    _hijacked_write = _iomiddle_write;
 }
 
 /***************************************************************

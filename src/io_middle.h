@@ -63,8 +63,8 @@ typedef struct fdinfo {
 } fdinfo;
 
 struct ioinfo {
+    int		init;
     int		debug;
-    int		aio;
     int		nprocs;
     int		rank;
     int		frank;
