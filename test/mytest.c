@@ -75,11 +75,11 @@ fillin(void *bufp, size_t busiz, int val)
 }
 
 static void
-do_write(char *fnm, off64_t offset, void *bufp, size_t bufsiz)
+do_write(char *fnm, off64_t offset, void *bufp, size_t bufsiz, int len)
 {
     int		fd, iter;
     size_t	sz;
-    off64_t	pos;
+    off64_t	bpos, fpos;
     int		flags;
 
     flags = O_CREAT|O_WRONLY;
@@ -91,50 +91,47 @@ do_write(char *fnm, off64_t offset, void *bufp, size_t bufsiz)
 	exit(-1);
     }
     fillin(bufp, bufsiz, 0);
-    pos = offset;
+    bpos = 0; fpos = offset;
     for (iter = 0; iter < len; iter++) {
 	VERBOSE {
-	    myprintf("[%d] iter=%d pos=%ld strsize(%ld)\n",
-		     myrank, iter, pos, strsize);
+	    myprintf("[%d] iter=%d fpos=%ld strsize(%ld)\n",
+		     myrank, iter, fpos, strsize);
 	}
-	sz = write_stripe(fd, bufp, strsize, pos);
+	sz = write_stripe(fd, (char*) bufp + bpos, strsize, fpos);
 	if (sz != strsize) {
 	    char buf[1024];
 	    snprintf(buf, 1024, "Write size = %ld, not %ld\n", sz, strsize);
 	    perror(buf);
 	}
-	pos += strsize*nprocs;
+	bpos += strsize;
+	fpos += strsize*nprocs;
     }
     close(fd);
 }
 
 static void
-do_read(char *fnm, off64_t offset, void *bufp, size_t busiz)
+do_read(char *fnm, off64_t offset, void *bufp, size_t busiz, int len)
 {
     int		fd, iter;
     size_t	sz;
-    off64_t	pos;
+    off64_t	bpos, fpos;
     
     if ((fd = open(fnm, O_RDONLY)) < 0) {
 	myprintf("Cannot open file %s\n", fnm);
 	exit(-1);
     }
-    pos = offset;
+    bpos = 0;
+    fpos = offset;
     for (iter = 0; iter < len; iter++) {
 	VERBOSE {
-	    myprintf("iter=%d pos=%ld strsize(%ld)\n", iter, pos, strsize);
+	    myprintf("iter=%d fpos=%ld strsize(%ld)\n", iter, fpos, strsize);
 	}
-	if (vflag) {
-	    fillin(bufp, bufsiz, -1);
-	}
-	sz = read_stripe(fd, bufp, strsize, pos);
+	sz = read_stripe(fd, (char*) bufp + bpos, strsize, fpos);
 	if (sz != strsize) {
 	    myprintf("Write size = %ld, not %ld\n", sz, strsize);
 	}
-	if (vflag) {
-	    errors += verify(bufp, bufsiz, 0);
-	}
-	pos += strsize*nprocs;
+	bpos += strsize;
+	fpos += strsize*nprocs;
     }
     close(fd);
 }
@@ -173,17 +170,31 @@ main(int argc, char **argv)
     timer_init();
     tot_fsize = ((double)(bufsiz*nprocs))/(1024.0*1024.);
     if (myrank == 0) {
-	myprintf("          nprocs: %d\n"
-		 "     stripe size: %ld\n"
-		 " proc write size: %f kB\n"
-		 "total write size: %f MiB\n"
-		 "       file name: %s\n"
-		 "        truncate: %d\n"
-		 "              hz: %ld\n"
-		 "           debug: %d\n",
-		 nprocs, strsize,
-		 (float)bufsiz/1024.0,
-		 tot_fsize, fnm, tflag, timer_hz, dflag);
+	if (rwflag & DO_WRITE) {
+	    myprintf("          nprocs: %d\n"
+		     "     stripe size: %ld\n"
+		     " proc write size: %f kB\n"
+		     "total write size: %f MiB\n"
+		     "       file name: %s\n"
+		     "        truncate: %d\n"
+		     "              hz: %ld\n"
+		     "           debug: %d\n",
+		     nprocs, strsize,
+		     (float)bufsiz/1024.0,
+		     tot_fsize, fnm, tflag, timer_hz, dflag);
+	} else {
+	    myprintf("         nprocs: %d\n"
+		     "    stripe size: %ld\n"
+		     " proc read size: %f kB\n"
+		     "total read size: %f MiB\n"
+		     "      file name: %s\n"
+		     "       truncate: %d\n"
+		     "             hz: %ld\n"
+		     "          debug: %d\n",
+		     nprocs, strsize,
+		     (float)bufsiz/1024.0,
+		     tot_fsize, fnm, tflag, timer_hz, dflag);
+	}
     }
 
     if (rwflag & DO_WRITE) {
@@ -191,16 +202,22 @@ main(int argc, char **argv)
 	    if (myrank == 0) myprintf("\nWRITE START\n");
 	}
 	timer_st[0] = tick_time();
-	do_write(fnm, offset, bufp, bufsiz);
+	do_write(fnm, offset, bufp, bufsiz, len);
 	timer_et[0] = tick_time();
     }
     if (rwflag & DO_READ) {
 	VERBOSE {
 	    if (myrank == 0) myprintf("\nREAD START\n");
 	}
+	if (vflag) {
+	    fillin(bufp, bufsiz, -1);
+	}
 	timer_st[1] = tick_time();
-	do_read(fnm, offset, bufp, bufsiz);
+	do_read(fnm, offset, bufp, bufsiz, len);
 	timer_et[1] = tick_time();
+	if (vflag) {
+	    errors += verify(bufp, bufsiz, 0);
+	}
     }
     if (myrank == 0) {
 	double	bw, eltime;
@@ -227,7 +244,7 @@ main(int argc, char **argv)
 			 "\t     BW: %12.9f MiB/sec\n",
 			 (float) eltime, (float) bw);
 		/* GiB/sec */
-		myprintf("\n@write,%d,%12.9f\n",
+		myprintf("\n@read,%d,%12.9f\n",
 			 nprocs, (float) (bw/1024.));
 	    }
 	}

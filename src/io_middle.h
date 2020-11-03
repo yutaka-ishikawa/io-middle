@@ -37,6 +37,7 @@ typedef struct fdinfo {
 			 rslvstr:1,     /* needs to resolve stripe size */
 			 dntcare: 1,
 			 trunc: 1,	/* flag of open with O_TRUNC */
+			 dirty:1,	/* buffer is dirty or not */
 			 rwmode: 2;	/* read or write mode */
 	};
 	int	attrall;
@@ -52,9 +53,9 @@ typedef struct fdinfo {
     int		iofd;	  /* file descriptor */
     int		filoff;   /* offset of file */
     int		filcurb;  /* start block# must be written */
-    int		filtail;  /* tail block# must be written */
+    int		filtail;  /* seek poiint of block#, this block has not been written */
     off64_t	filblklen;/* block length = stripsize*nprocs */
-    off64_t	filpos;   /* file position in byte */
+    off64_t	filpos;   /* file position in byte, the beggining of write/read position  */
     off64_t	bufpos;   /* buffer position in byte */
     int		lanepos;  /* lane posision for read */
     char	*ubuf;
@@ -66,6 +67,7 @@ struct ioinfo {
     int		aio;
     int		nprocs;
     int		rank;
+    int		frank;
     int		mybuflanes;
     int		mybufcount;
     int		reqtrunc;
@@ -123,6 +125,7 @@ if (_inf.debug) {				\
 }
 
 #define Myrank 	(_inf.rank)
+#define Frank 	(_inf.frank)
 #define Nprocs 	(_inf.nprocs)
 #define Wenable	(_inf.wrk_enable)
 #define Wenbflg	(_inf.wrk_enblflg)
