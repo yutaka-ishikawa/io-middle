@@ -19,6 +19,7 @@
 #define DLEVEL_BUFMGR	0x4
 #define DLEVEL_CONFIRM	0x8
 #define DLEVEL_WORKER	0x10
+#define DLEVEL_READ	0x20
 
 #define MODE_UNKNOWN	0
 #define MODE_READ	1
@@ -60,7 +61,10 @@ typedef struct fdinfo {
     int		lanepos;  /* lane posision for read */
     char	*ubuf;
     char	*sbuf;
+    char	*dbuf[2];
 } fdinfo;
+
+typedef size_t (*io_cmd)(int, void*, size_t, off64_t);
 
 struct ioinfo {
     int		init;
@@ -79,16 +83,19 @@ struct ioinfo {
     pthread_barrier_t	wrk_sync;
     pthread_mutex_t	wrk_mtx;
     pthread_cond_t	wrk_cnd;
-    size_t	(*wrk_cmd)(int, void*, size_t, off64_t);
+    io_cmd	wrk_cmd;
     size_t	wrk_cret;	/* return value to the client */
     int		wrk_cfd;	/* client fd */
     void	*wrk_cbuf;	/* client buffer, allocated by the client */
     size_t	wrk_csiz;	/* client requested size */
     off64_t	wrk_cpos;	/* client requested file possition */
+    off64_t	wrk_wsiz;	/* worker io size */
+    off64_t	wrk_wpos;	/* worker current possition */
+    off64_t	wrk_wlen;	/* */
+    size_t	wrk_wret;	/* */
     int		wrk_sig;
     int		wrk_nfst;	/* not first time to be invoked */
-    char	*wrk_rbuf;	/* used for read created by the worker */
-    size_t	wrk_rret;	/* */
+    int		wrk_tiktok;	/* toggle */
 };
 
 #define DEBUG(level)	if (_inf.debug&(level))
@@ -139,7 +146,10 @@ if (_inf.debug) {				\
 #define Wcbuf	(_inf.wrk_cbuf)
 #define Wcsiz	(_inf.wrk_csiz)
 #define Wcpos	(_inf.wrk_cpos)
+#define Wwsiz	(_inf.wrk_wsiz)
+#define Wwpos	(_inf.wrk_wpos)
+#define Wwlen	(_inf.wrk_wlen)
+#define Wwret	(_inf.wrk_wret)
 #define Wsig	(_inf.wrk_sig)
-#define Wrbuf	(_inf.wrk_rbuf)
-#define Wrret	(_inf.wrk_rret)
+#define Wtiktok (_inf.wrk_tiktok)
 #define Wnfst	(_inf.wrk_nfst)

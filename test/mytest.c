@@ -128,7 +128,7 @@ do_read(char *fnm, off64_t offset, void *bufp, size_t busiz, int len)
 	}
 	sz = read_stripe(fd, (char*) bufp + bpos, strsize, fpos);
 	if (sz != strsize) {
-	    myprintf("Write size = %ld, not %ld\n", sz, strsize);
+	    myprintf("iter = %d Read size = %ld, not %ld\n", iter, sz, strsize);
 	}
 	bpos += strsize;
 	fpos += strsize*nprocs;

@@ -44,15 +44,19 @@
 #include <mpi.h>
 #include <limits.h>
 
+#define POS_TO_BLK(off, strsize)		((off)/(strsize))
+#define REQBLK_TO_CURBLK(blk, strcnt, procs, frank)	(((blk)/((strcnt)*(procs)))*(procs) + (frank))
+
 static struct ioinfo _inf;
 static char	care_path[PATH_MAX];
 
-static void	worker_init();
+static void	worker_init(int);
 static void	worker_fin();
 static void	io_init(int flg, int fd);
+static int	io_setup(io_cmd, int fd, size_t siz, off64_t pos);
+static void	io_write_bufupdate(fdinfo *info);
 static void	io_fin(int fd);
-static size_t	io_issue(size_t (*cmd)(int, void*, size_t, off64_t),
-			 int fd, void *buf, size_t size, off64_t pos);
+static size_t	io_issue(io_cmd,  int fd, void *buf, size_t size, off64_t pos);
 
 #if 0
 static char	*dont_path[] = {
@@ -188,11 +192,15 @@ buf_init(int fd, int strsize, int frank)
     _inf.fdinfo[fd].bufsize = _inf.fdinfo[fd].filblklen;
     _inf.fdinfo[fd].ubuf = malloc(_inf.fdinfo[fd].bufsize*_inf.mybuflanes);
     _inf.fdinfo[fd].sbuf = malloc(_inf.fdinfo[fd].bufsize*_inf.mybuflanes);
+    _inf.fdinfo[fd].dbuf[0] = 0;
+    _inf.fdinfo[fd].dbuf[1] = malloc(_inf.fdinfo[fd].bufsize*_inf.mybuflanes);
     IOMIDDLE_IFERROR(
-	(_inf.fdinfo[fd].ubuf == NULL || _inf.fdinfo[fd].sbuf == NULL),
+	(_inf.fdinfo[fd].ubuf == NULL || _inf.fdinfo[fd].sbuf == NULL
+	 || _inf.fdinfo[fd].dbuf[1] == NULL),
 	"%s", "Cannot allocate IO middleware buffer\n");
     memset(_inf.fdinfo[fd].ubuf, 0, _inf.fdinfo[fd].bufsize*_inf.mybuflanes);
     memset(_inf.fdinfo[fd].sbuf, 0, _inf.fdinfo[fd].bufsize*_inf.mybuflanes);
+    memset(_inf.fdinfo[fd].dbuf[1], 0, _inf.fdinfo[fd].bufsize*_inf.mybuflanes);
     _inf.fdinfo[fd].filcurb = frank;
     _inf.fdinfo[fd].filtail = frank;
     DEBUG(DLEVEL_BUFMGR) {
@@ -310,7 +318,12 @@ io_read(int fd, void *buf, size_t size, off64_t pos)
 {
     size_t	sz;
 
+    __real_lseek64(fd, pos, SEEK_SET);
     sz = __real_read(fd, buf, size);
+    DEBUG(DLEVEL_READ) {
+	dbgprintf("%s: fd(%d) pos(%ld), req-size(%ld) read-size(%ld), buf(%p)\n",
+		  __func__, fd, pos, size, sz, buf);
+    }
     return sz;
 }
 
@@ -400,14 +413,10 @@ buf_flush(fdinfo *info, int cls)
 		dbgprintf("\t writing soff(%d) blksize(%d) filpos(%d)\n", soff, blksize, filpos);
 	    }
 	    sz = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf + soff, blksize, filpos);
-	    if (info->frstrwcall || sz == blksize) {
-		/* incase of the first read/write, return value might be zero */
+	    if (sz == blksize) {
 		cc = strsize;
-		info->frstrwcall = 0;
 	    } else {
-		DEBUG(DLEVEL_BUFMGR) {
-		    dbgprintf("%s: cc(%ld) blksize(%ld)\n", __func__, cc, blksize);
-		}
+		dbgprintf("%s: ERROR cc(%ld) blksize(%ld)\n", __func__, cc, blksize);
 		cc = -1ULL;
 	    }
 	    info->filcurb += strcnt;
@@ -419,6 +428,7 @@ buf_flush(fdinfo *info, int cls)
 	}
 	soff += blksize;
     }
+    io_write_bufupdate(info);
     info->buflanes = 0;
     info->bufcount = 0;
     info->bufpos = 0;
@@ -501,7 +511,7 @@ _iomiddle_open(const char *path, int flags, ...)
 	    dbgprintf("[%d] open() DO-CARE file fd(%d) path(%s)\n",
 		      Myrank, fd, path);
 	}
-	worker_init();
+	worker_init(Wenbflg);
 	info_init(path, fd, flags, mode);
 	io_init(Wenbflg, fd);
     }
@@ -601,6 +611,10 @@ _iomiddle_write(int fd, const void *buf, size_t len)
     IOMIDDLE_IFERROR((len != info->strsize),
 		     "write length must be the stripe size. "
 		     "len(%ld) stripe size(%d)\n", len, info->strsize);
+    if (info->frstrwcall) {
+	io_setup(WRK_CMD_WRITE, fd, info->bufsize, 0); /* pos is ignored */
+	info->frstrwcall = 0;
+    }
     memcpy(info->ubuf + info->bufpos, buf, len);
     info->bufpos += len; info->bufcount++;
     info->filpos += len;
@@ -627,8 +641,8 @@ _iomiddle_write(int fd, const void *buf, size_t len)
 	} else {
 	    info->bufcount = 0;
 	}
+	info->filtail += info->strcnt;
     }
-    info->filtail += info->strcnt;
     //dbgprintf("%s: filtail(%d)\n", __func__, info->filtail);
     if (rc != len) {
 	fprintf(stderr, "%s: ERROR return rc(%ld)\n", __func__, rc);
@@ -650,28 +664,47 @@ _iomiddle_read(int fd, void *buf, size_t len)
 	rc = __real_read(fd, buf, len);
 	return rc;
     }
-    DEBUG(DLEVEL_HIJACKED) {
-	fprintf(stderr, "%s DO-CARE fd(%d) len(%ld)\n", __func__, fd, len);
+    DEBUG(DLEVEL_HIJACKED|DLEVEL_READ) {
+	dbgprintf("%s DO-CARE fd(%d) len(%ld)\n", __func__, fd, len);
     }
     if (stripe_check_init(fd, len, 0)) {
 	DEBUG(DLEVEL_HIJACKED) { info_show(fd, __func__); }
 	abort();
     }
     info = &_inf.fdinfo[fd];
-    if (info->lanepos == 0 || info->lanepos == info->buflanes) {
-	cc = io_issue(WRK_CMD_READ, info->iofd, info->sbuf,
-		      info->bufsize*_inf.mybuflanes, 0);
+    if (info->frstrwcall || info->lanepos == info->buflanes) {
+	size_t	blksize = info->filblklen;
+	off_t	filpos = info->filcurb * blksize;
+	DEBUG(DLEVEL_BUFMGR|DLEVEL_READ) {
+	    dbgprintf("%s:\t READ len(%ld) lanepos(%d) mybuflanes(%d) filpos(%ld) filcurb(%d) filpos(%ld)\n",
+		      __func__, info->bufsize*_inf.mybuflanes, info->lanepos, _inf.mybuflanes,
+		      info->filpos, info->filcurb, filpos);
+	}
+	/*
+	 * Though multiple lanes are requested, the single lane is isued for read
+	 */
 	if (info->frstrwcall) { /* the first-time read/write call */
-	    cc = info->bufsize; /* return value is zero any cases */
+	    io_setup(WRK_CMD_READ, fd, info->bufsize, filpos);
 	    info->frstrwcall = 0;
 	}
+	/* info->sbuf will be set by io_issue */
+	cc = io_issue(WRK_CMD_READ, info->iofd, &info->sbuf, info->bufsize, filpos);
 	/* Though read opertaion returns error, other processes may success.
 	 * Thus error is checked after Scatter */
-	info->buflanes = _inf.mybuflanes;
+	info->buflanes = cc/info->bufsize; /* determined by actual read size */
+	info->lanepos = 0; /* reset */
+	DEBUG(DLEVEL_BUFMGR|DLEVEL_READ) {
+	    dbgprintf("%s: \t new buflanes(%ld) readsize(%ld)/bufsize(%ld)\n", __func__, info->buflanes, cc, info->bufsize);
+	}
+    } else {
+	cc = info->bufsize;
     }
-    if (info->lanepos < info->buflanes) {
+    if (info->bufcount == 0) { // if (info->lanepos < info->buflanes) {
 	int	i, off = 0;
-
+	DEBUG(DLEVEL_BUFMGR|DLEVEL_READ) {
+	    dbgprintf("%s:\t FILL UBUF lanepos(%d) bufsize(%ld) buflanes(%d) strsize(%ld) cc(%ld)\n",
+		      __func__, info->lanepos, info->bufsize, info->buflanes,  info->strsize, cc);
+	}
 	for (i = 0; i < Nprocs; i++) {
 	    MPI_CALL(
 		MPI_Scatter(info->sbuf + info->lanepos*info->bufsize,
@@ -681,21 +714,33 @@ _iomiddle_read(int fd, void *buf, size_t len)
 	    off += info->strsize;
 	}
 	if ((int64_t) cc < 0) {
-	    rc = cc;
-	    goto ext;
-	} else if (cc < _inf.fdinfo[fd].bufsize) {
+	    rc = cc; goto ext;
+	} else if (cc < info->bufsize && info->buflanes > 0) {
 	    /* truncated ? */
-	    rc = cc/Nprocs;
-	    goto ext;
+	    rc = cc/Nprocs; goto ext;
 	}
+	/* "cc = 0" is OK because such ranks do not have buffer data */
+    }
+    DEBUG(DLEVEL_READ) {
+	dbgprintf("%s:\t bufpos(%d) len(%ld)\n", __func__, info->bufpos, len);
     }
     memcpy(buf, info->ubuf + info->bufpos, len);
+    info->bufpos += len;
+    info->bufcount += 1;
+    if (info->bufcount == _inf.mybufcount) { /* info->bufpos == info->bufsize */
+	info->lanepos += 1;
+	info->bufpos = 0;
+	info->bufcount = 0;
+	info->filcurb += info->strcnt;
+	info->filtail += info->strcnt; /* next expected tail pointer */
+    }
     info->filpos += len;
-    info->lanepos += 1;
-    info->filcurb += info->strcnt;
-    info->filtail += info->strcnt; /* next expected tail pointer */
-    //dbgprintf("%s: blks(%d) tailblks(%d)\n", __func__, info->filcurb, info->filtail);
 ext:
+    DEBUG(DLEVEL_BUFMGR|DLEVEL_READ) {
+	dbgprintf("%s:\t RETURN blks(%d) tailblks(%d) bufcount(%d) mybufcount(%d) lanepos(%d) buflanes(%d)\n",
+		  __func__, info->filcurb, info->filtail, info->bufcount,
+		  _inf.mybufcount, info->lanepos, info->buflanes);
+    }
     return rc;
 }
 
@@ -713,9 +758,14 @@ lseek_general(int fd, off64_t reqfilpos)
     /* file position is now reqfilpos */
     info = &_inf.fdinfo[fd];
     rc = info->filpos = reqfilpos;
-    if (!(Myrank == 0 && reqfilpos == 0)) {
-	int	blks   = reqfilpos/info->strsize;
+    if (!(Frank == 0 && reqfilpos == 0)) {
+	int	nstr   = reqfilpos/info->strsize;
+	int	blks   = REQBLK_TO_CURBLK(nstr, info->strcnt, info->strcnt, Frank);
 
+	DEBUG(DLEVEL_READ) {
+	    dbgprintf("%s: reqfilpos(%ld) blks(%d) tailblks(%d) Frank(%d)\n",
+		      __func__, reqfilpos, blks, _inf.fdinfo[fd].filtail, Frank);
+	}
 	/* checking if this file position is the next */
 	IOMIDDLE_IFERROR((blks != _inf.fdinfo[fd].filtail),
 			 "lseek_general: offset is out of block area: %ld "
@@ -936,36 +986,29 @@ worker(void *p)
 	    pthread_cond_wait(&Wcnd, &Wmtx);
 	}
 	DEBUG(DLEVEL_WORKER) {
-	    dbgprintf("%s: cmd(%s) cfd(%d) cbuf(%p) csize(%ld) cpos(%ld) rbuf(%p)\n",
+	    dbgprintf("%s: cmd(%s) Wcfd(%d) Wcbuf(%p) Wcsize(%ld) Wcpos(%ld) Wwpos(%ld)\n",
 		      __func__, (Wcmd == WRK_CMD_WRITE) ? "WRITE" : "READ",
-		      Wcfd, Wcbuf, Wcsiz, Wcpos, Wcret, Wrbuf);
+		      Wcfd, Wcbuf, Wcsiz, Wcpos, Wwpos);
 	}
 	if (Wcmd == WRK_CMD_WRITE) {
 	    sz = io_write(Wcfd, Wcbuf, Wcsiz, Wcpos);
 	    worker_sigdone(sz); /* signal to the client, go ahead */
 	} else if (Wcmd == WRK_CMD_READ) {
-	    if (!Wnfst) { /* this is the first time to read */
-		Wnfst = 1;
-		/* read buffer */
-		sz = Wcsiz;
-		Wrbuf = malloc(sz);
-		if(Wrbuf == NULL) {
-		    dbgprintf("%s: Cannot allocate buffer sz(%ld)\n", __func__, sz);
-		    exit(-1);
-		}
-		sz = io_read(Wcfd, Wcbuf, Wcsiz, Wcpos);
-		/* prefetching and its return values is stored in Wrret */
-		Wrret = io_read(Wcfd, Wrbuf, Wcsiz, Wcpos);
-		worker_sigdone(sz); /* signal to the client, go ahead */
-	    } else {
-		sz = Wcret;
-		if (sz > 0) {
-		    memcpy(Wcbuf, Wrbuf, Wcsiz);
-		}
-		worker_sigdone(sz); /* signal to the client, go ahead */
-		/* worker is still working here */
-		Wrret = io_read(Wcfd, Wrbuf, Wcsiz, Wcpos);
+	    /*
+	     * The first request has been already set up in io_setup()
+	     */
+	    if (Wcpos != Wwpos) {
+		dbgprintf("%s: Unexpected file position: request(%ld) assume(%ld)\n", __func__, Wcpos, Wwpos);
 	    }
+	    if (Wcsiz != Wwsiz) {
+		dbgprintf("%s: Unexpected read size: request(%ld) assume(%ld)\n", __func__, Wcsiz, Wwsiz);
+	    }
+	    /* worker is still working here */
+	    Wwpos += Wwlen;
+	    Wwret = io_read(Wcfd, _inf.fdinfo[Wcfd].dbuf[Wtiktok], Wwsiz, Wwpos);
+	    Wcpos = Wwpos;
+	    dbgprintf("%s: Wwret(%ld) Wwpos(%ld) Wwsiz(%ld)\n", __func__, Wwret, Wwpos, Wwsiz);
+	    worker_sigdone(Wwret); /* signal to the client, go ahead */
 	} else if (Wcmd == WRK_CMD_FIN) {
 	    DEBUG(DLEVEL_WORKER) {
 		dbgprintf("%s: Exiting\n", __func__);
@@ -986,8 +1029,7 @@ worker(void *p)
 }
 
 static inline size_t
-io_issue(size_t (*cmd)(int, void*, size_t, off64_t),
-	 int fd, void *buf, size_t size, off64_t pos)
+io_issue(io_cmd cmd, int fd, void *buf, size_t size, off64_t pos)
 {
     size_t	sz;
     DEBUG(DLEVEL_WORKER) {
@@ -1011,6 +1053,15 @@ io_issue(size_t (*cmd)(int, void*, size_t, off64_t),
 	 * The client must care of this condition.
 	 */
 	sz = Wcret;
+	if (cmd == WRK_CMD_READ) {
+	    if (pos != Wcpos) {
+		dbgprintf("%s: something wrong: request-pos(%ld) assumed-pos(%ld)\n", __func__, pos, Wcpos);
+	    }
+	    *(void**) buf = _inf.fdinfo[fd].dbuf[Wtiktok];
+	    /* Next read buffer is updated */
+	    Wtiktok ^= 1;
+	}
+	/* request */
 	Wcmd = cmd; Wcbuf = buf; Wcsiz = size; Wcpos = pos;
 	pthread_mutex_unlock(&Wmtx);
 	pthread_cond_signal(&Wcnd);
@@ -1025,8 +1076,11 @@ io_issue(size_t (*cmd)(int, void*, size_t, off64_t),
 	DEBUG(DLEVEL_WORKER) {
 	    dbgprintf("%s: Blocking IO\n", __func__);
 	}
-	if (cmd == io_read || cmd == io_write) {
-	sz = cmd(fd, buf, size, pos);
+	if (cmd == io_read) {
+	    /* buf in io_read is pointer of pointer */
+	    sz = cmd(fd, *(void**)buf, size, pos);
+	} else if (cmd == io_write) {
+	    sz = cmd(fd, buf, size, pos);
 	} else {
 	    dbgprintf("%s: internal error\n", __func__);
 	    abort();
@@ -1046,9 +1100,51 @@ io_init(int is_worker_enable, int fd)
 	//dbgprintf("%s: Initialize for fd=%d worker(%d)\n", __func__, fd, is_worker_enable);
 	Wcmd = WRK_CMD_DONE;
 	Wcfd = fd;
-	Wcbuf = 0; Wcsiz = 0; Wcpos = 0; Wrbuf = 0;
+	Wcbuf = 0; Wcsiz = 0; Wcpos = 0;
 	Wenable = is_worker_enable;
     }
+}
+
+static int
+io_setup(io_cmd cmd, int fd, size_t siz, off64_t pos)
+{
+    fdinfo	*info;
+
+    DEBUG(DLEVEL_READ) {
+	dbgprintf("%s: cmd(%s) fd(%d) siz(%ld) pos(%ld)\n",
+		  __func__, (cmd == WRK_CMD_WRITE) ? "WRITE" : "READ", fd, siz, pos);
+    }
+    if (!Wenable) return 0;
+    if (fd != Wcfd) {
+	fprintf(stderr, "%s: fd (%d) is handled by the worker.\n", __func__, fd);
+	return -1;
+    }
+    info = &_inf.fdinfo[fd];
+    if (cmd == WRK_CMD_WRITE) {
+	info->dbuf[0] = info->sbuf;
+	Wcret = Wwret = Wwsiz = info->bufsize; Wtiktok = 0;
+    } else if (cmd == WRK_CMD_READ) {
+	/* set double bufferring and initial worker variables */
+	info->dbuf[0] = info->sbuf;
+	Wcret = Wwret = Wwsiz = info->bufsize; Wwpos = Wcpos = pos; Wtiktok = 0;
+	Wwlen = info->filblklen * info->strcnt;
+	/* prefetching here */
+	io_read(info->iofd, info->sbuf, info->bufsize, pos);
+    } else {
+	fprintf(stderr, "%s: internal error: unknown command %p\n", __func__, cmd);
+	abort();
+    }
+    DEBUG(DLEVEL_READ) {
+	dbgprintf("%s:\t return 0\n", __func__);
+    }
+    return 0;
+}
+
+static void
+io_write_bufupdate(fdinfo *info)
+{
+    Wtiktok ^= 1;
+    info->sbuf = info->dbuf[Wtiktok];
 }
 
 static void
@@ -1070,17 +1166,14 @@ io_fin(int fd)
     pthread_mutex_unlock(&Wmtx);
     // dbgprintf("%s: worker is idle\n", __func__);
     Wcfd = 0;
-    if (Wrbuf) {
-	free(Wrbuf);
-    }
-    Wrbuf = 0;
 }
 
 void
-worker_init()
+worker_init(int is_worker_enable)
 {
     int	cc;
 
+    if (is_worker_enable == 0) return;
     atexit(worker_fin);
     pthread_mutex_init(&Wmtx, NULL);
     pthread_cond_init(&Wcnd, NULL);

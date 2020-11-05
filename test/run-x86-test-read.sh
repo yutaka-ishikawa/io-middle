@@ -12,13 +12,17 @@ do_test ()
 
 
 if [ $# = 0 ]; then
-    echo "Usage: run-x86-test.sh [gen_ref|simple|multi|worker|multi-worker]"
+    echo "Usage: run-x86-test.sh [no-middle|simple|multi|worker|multi-worker]"
     exit
 fi
    
 case $1 in
-    gen_ref)
+    no-middle)
 	do_test ./results-nomiddle
+	do_test ./results-simple
+	do_test ./results-multi
+	do_test ./results-worker
+	do_test ./results-multi-worker
 	;;
     simple)
 	(export LD_PRELOAD=../src/io_middle.so; \
@@ -45,7 +49,7 @@ case $1 in
 	 do_test ./results-multi-worker)
 	;;
     *)
-	echo "Usage: run-x86-test.sh [gen_ref|simple|multi|worker|multi-worker]"
+	echo "Usage: run-x86-test.sh [no-middle|simple|multi|worker|multi-worker]"
 	;;
 esac
 
