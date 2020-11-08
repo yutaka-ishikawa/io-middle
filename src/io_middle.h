@@ -50,12 +50,13 @@ typedef struct fdinfo {
     int		strcnt;	  /* stripe count */
     int		buflanes; /* number of stripes */
     int		bufcount; /* one stripe (== stripe count) */
+    int		bufend;	  /* read end */
     size_t	bufsize;  /* total size */
     int		iofd;	  /* file descriptor */
     int		filoff;   /* offset of file */
     int		filcurb;  /* start block# must be written */
-    int		filtail;  /* seek poiint of block#, this block has not been written */
-    off64_t	filblklen;/* block length = stripsize*nprocs */
+    int		filtail;  /* seek point of block#, this block has not been written */
+    off64_t	filchklen;/* chunck length = stripsize*nprocs */
     off64_t	filpos;   /* file position in byte, the beggining of write/read position  */
     off64_t	bufpos;   /* buffer position in byte */
     int		lanepos;  /* lane posision for read */

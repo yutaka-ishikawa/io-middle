@@ -45,7 +45,7 @@
 #include <limits.h>
 
 #define POS_TO_BLK(off, strsize)		((off)/(strsize))
-#define REQBLK_TO_CURBLK(blk, strcnt, procs, frank)	(((blk)/((strcnt)*(procs)))*(procs) + (frank))
+#define REQBLK_TO_CURBLK(blk, strcnt, nprocs)	((blk)/((strcnt)*(nprocs)))
 
 static struct ioinfo _inf;
 static char	care_path[PATH_MAX];
@@ -75,15 +75,16 @@ static char	*dont_path[] = {
 };
 #endif
 
+static char dbgbuf[1024];
 static int
 dbgprintf(const char *fmt, ...)
 {
     va_list	ap;
     int		rc;
 
-    fprintf(stderr, "[%d] ", Myrank);
+    snprintf(dbgbuf, 1024, "[%d] %s", Myrank, fmt);
     va_start(ap, fmt);
-    rc = vfprintf(stderr, fmt, ap);
+    rc = vfprintf(stderr, dbgbuf, ap);
     va_end(ap);
     fflush(stderr);
     return rc;
@@ -96,7 +97,7 @@ info_show(int fd, const char *fname)
 	       "block size(%ld) mybufcount(%d)\n",
 	       Myrank, fname, Nprocs,
 	       _inf.fdinfo[fd].bufsize, _inf.fdinfo[fd].strsize,
-	       _inf.fdinfo[fd].filblklen, _inf.mybufcount);
+	       _inf.fdinfo[fd].filchklen, _inf.mybufcount);
 }
 
 void
@@ -139,6 +140,12 @@ rank_init()
 	MPI_Comm_size(MPI_COMM_WORLD, &Nprocs);
 	MPI_Comm_rank(MPI_COMM_WORLD, &Myrank);
     }
+    if (Myrank == 0) {
+	char        *cp = getenv("IOMIDDLE_CONFIRM");
+	if (cp && atoi(cp) > 0) {
+	    fprintf(stderr, "IO-MIDDLE is attached\n"); fflush(stderr);
+	}
+    }
 }
 
 static inline int
@@ -179,7 +186,7 @@ buf_init(int fd, int strsize, int frank)
 {
     int	strcnt = Nprocs;
 
-    _inf.mybufcount = strcnt;
+    _inf.mybufcount = strcnt * _inf.mybuflanes;
     _inf.frank = frank;
     /* _inf.mybuflanes = is set by shell environment variable */
     _inf.fdinfo[fd].notfirst = 1;
@@ -187,9 +194,9 @@ buf_init(int fd, int strsize, int frank)
     _inf.fdinfo[fd].strsize = strsize;
     _inf.fdinfo[fd].strcnt = strcnt;
     _inf.fdinfo[fd].filoff = _inf.fdinfo[fd].strsize*Myrank;
-    _inf.fdinfo[fd].filblklen = strsize * strcnt;
+    _inf.fdinfo[fd].filchklen = strsize * strcnt;
     _inf.fdinfo[fd].buflanes = 0;
-    _inf.fdinfo[fd].bufsize = _inf.fdinfo[fd].filblklen;
+    _inf.fdinfo[fd].bufsize = _inf.fdinfo[fd].filchklen;
     _inf.fdinfo[fd].ubuf = malloc(_inf.fdinfo[fd].bufsize*_inf.mybuflanes);
     _inf.fdinfo[fd].sbuf = malloc(_inf.fdinfo[fd].bufsize*_inf.mybuflanes);
     _inf.fdinfo[fd].dbuf[0] = 0;
@@ -201,11 +208,11 @@ buf_init(int fd, int strsize, int frank)
     memset(_inf.fdinfo[fd].ubuf, 0, _inf.fdinfo[fd].bufsize*_inf.mybuflanes);
     memset(_inf.fdinfo[fd].sbuf, 0, _inf.fdinfo[fd].bufsize*_inf.mybuflanes);
     memset(_inf.fdinfo[fd].dbuf[1], 0, _inf.fdinfo[fd].bufsize*_inf.mybuflanes);
-    _inf.fdinfo[fd].filcurb = frank;
-    _inf.fdinfo[fd].filtail = frank;
+    _inf.fdinfo[fd].filcurb = Frank;
+    _inf.fdinfo[fd].filtail = Frank;
     DEBUG(DLEVEL_BUFMGR) {
 	dbgprintf("%s: blksize(%d) strsize(%d) strcnt(%d) file_rank(%d)\n", __func__,
-		  _inf.fdinfo[fd].filblklen, _inf.fdinfo[fd].strsize, _inf.fdinfo[fd].strcnt, frank);
+		  _inf.fdinfo[fd].filchklen, _inf.fdinfo[fd].strsize, _inf.fdinfo[fd].strcnt, frank);
     }
 }
 
@@ -321,7 +328,7 @@ io_read(int fd, void *buf, size_t size, off64_t pos)
     __real_lseek64(fd, pos, SEEK_SET);
     sz = __real_read(fd, buf, size);
     DEBUG(DLEVEL_READ) {
-	dbgprintf("%s: fd(%d) pos(%ld), req-size(%ld) read-size(%ld), buf(%p)\n",
+	dbgprintf("%s: READ## fd(%d) pos(%ld), req-size(%ld) read-size(%ld), buf(%p)\n",
 		  __func__, fd, pos, size, sz, buf);
     }
     return sz;
@@ -331,102 +338,91 @@ static size_t
 buf_flush(fdinfo *info, int cls)
 {
     size_t	cc = -1ULL;
-    int	i, j;
-    int uoff, soff;
+    int	i, j, this_rank;
+    int uoff, soff, my_wlen = 0;
+    size_t	sz;
+    int		curb = info->filcurb;
     int		strcnt = info->strcnt;
     size_t	strsize = info->strsize;
-    size_t	blksize = info->filblklen;
+    size_t	chunksize = info->filchklen;
 
     if (info->dirty == 0) { /* no need to flush */
 	return 0;
     }
     /*
+     *  from write: 
+     *  from close: 
      * ubuf : user data buffer, contining stripe * bufcount
      * sbuf : system data buffer
      * ubuf --> sbuf per stripe
-     */
-    /*
-     *  from write: 
-     *  from close: 
-     */
-    if (cls) { /* in order to flush remaining data */
-	info->buflanes += 1;
-    }
-    DEBUG(DLEVEL_BUFMGR) {
-	dbgprintf("%s: %s info->buflanes(%d) info->bufcount(%d) strcnt(%d)\n",
-		  __func__, cls == 0 ?"WRITE_FLUSH":"CLOSE_FLUSH", info->buflanes, info->bufcount, strcnt);
-    }
-    uoff = 0; soff = 0;
-    for (j = 0; j < info->buflanes; j++) {
-	int	thiscount = (j == info->buflanes - 1) ? info->bufcount: strcnt;
-	for (i = 0; i < thiscount; i++) {
-	    DEBUG(DLEVEL_BUFMGR) {
-		data_show("ubuf", (int*) (info->ubuf + uoff), 5, uoff);
-	    }
-	    MPI_CALL(
-		MPI_Gather(info->ubuf + uoff, strsize, MPI_BYTE,
-			   info->sbuf + soff, strsize, MPI_BYTE,
-			   i, MPI_COMM_WORLD));
-	    uoff += strsize;
-	}
-	soff += blksize;
-    }
-    /*
+     *
      * bufcount: # of strips has been written to the buffer
      *   (nprocs == bufcount): buffers are fulled over all processes
      *   (nprocs < bufcount):  ranks, smaller than bufcount, only keep data
      * Variables with prefix "fil" are file view
      *   filpos:  pointer
-     *   filcurb: current block number
-     *		Each block is the maximum contiguous area in file view.
+     *   filcurb: current block number (stripe size)
+     *	Each block is the maximum contiguous area in file view.
      *		writing/reading to/from file is performed per block.
      *		filcurb is advanced by stripe count, not +1.
      *   filtail: last block buffered in local
-     *   filblklen: block length (stripe size * nprocs)
+     *   filchklen: chunk length (stripe size * nprocs)
      *		stripe count is equal to nprocs
      *  E.g.
      *	         rank 0	  rank 1     rank 2     rank 3
      *  ubuf   #0#1#2#3   #0#1#2#3   #0#1#2#3   #0#1#2#3
      *         <------------- Exchange ---------------->
-     *	sbuf     blk#0	  blk#1	      blk#2	blk#3
+     *	sbuf    chunk#0   chunk#1   chunk#2	chunk#3
      */
-    soff = 0;
-    for (j = 0; j < info->buflanes; j++) {
-	int	thiscount = (j == info->buflanes - 1) ? info->bufcount : strcnt;
-	DEBUG(DLEVEL_BUFMGR) {
-	    dbgprintf("%s: thiscount(%d) blksize(%d) filcurb(%d)\n", __func__, thiscount, blksize, info->filcurb);
-	}
-	if (Myrank < thiscount) {
-	    off_t	filpos = info->filcurb * blksize;
-	    size_t	sz;
-
-	    DEBUG(DLEVEL_BUFMGR) {
-		dbgprintf("writing size(%ld) filpos(%ld) "
-			  "curblk#(%d) tailblk#(%d)\n",
-			  info->bufsize, filpos,  info->filcurb, info->filtail);
-		/* showing one block */
-		for (i = 0; i < info->bufsize; i += strsize) {
-		    data_show("sbuf", (int*) (info->sbuf + soff + i), 5, i);
-		}
-	    }
-	    DEBUG(DLEVEL_BUFMGR) {
-		dbgprintf("\t writing soff(%d) blksize(%d) filpos(%d)\n", soff, blksize, filpos);
-	    }
-	    sz = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf + soff, blksize, filpos);
-	    if (sz == blksize) {
-		cc = strsize;
-	    } else {
-		dbgprintf("%s: ERROR cc(%ld) blksize(%ld)\n", __func__, cc, blksize);
-		cc = -1ULL;
-	    }
+    if (cls) { /* in order to flush remaining data */
+	info->buflanes += 1;
+    }
+    j = 0; uoff = 0; soff = 0;
+    /* 0 < info->bufcount <= _inf.mybufcount */
+    while (j < info->bufcount) {
+	this_rank = j / _inf.mybuflanes;
+	for (i = 0; i < _inf.mybuflanes && j < info->bufcount; i++, j++) {
+	    // dbgprintf("%s: j(%d) this_rank(%d) uoff(%d)\n", __func__, j, this_rank, uoff);
+	    MPI_CALL(
+		MPI_Gather(info->ubuf + uoff, strsize, MPI_BYTE,
+			   info->sbuf + soff, strsize, MPI_BYTE,
+			   this_rank, MPI_COMM_WORLD));
+	    uoff += strsize;
+	    soff += chunksize;
 	    info->filcurb += strcnt;
-	} else {
-	    DEBUG(DLEVEL_BUFMGR) {
-		dbgprintf("No needs to write\n", Myrank);
-	    }
-	    cc = strsize;
 	}
-	soff += blksize;
+	if (this_rank == Myrank) {
+	    my_wlen = soff; /* saved */
+	}
+	soff = 0;
+    }
+    if (my_wlen > 0) {
+	int	nblks = strcnt * strcnt * _inf.mybuflanes; /* number of blocks in one flush */
+	int	lblks = strcnt * _inf.mybuflanes; /* number of blocks per one forworder */
+	int	nth = curb / nblks;
+	int	wblks = nth*nblks + lblks*Frank;
+	size_t filpos = strsize * wblks;
+	
+	DEBUG(DLEVEL_BUFMGR) {
+	    dbgprintf("%s: %s WRITE curb(%d) w-blks(%d) filpos(%ld) wlen(%ld) nth(%d) nblks(%d) chunksize(%d) Frank(%d)\n",
+		      __func__, cls == 0 ?"WRITE_FLUSH":"CLOSE_FLUSH", curb, wblks, filpos, my_wlen, nth, nblks, chunksize, Frank);
+	}
+	sz = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf, my_wlen, filpos);
+	if (sz == 0 || sz == my_wlen) { /* first io_issue is always zero */
+	    cc = strsize;
+	} else {
+	    dbgprintf("%s: ERROR cc(%ld) my_wlen(%ld)\n", __func__, cc, my_wlen);
+	    cc = -1ULL;
+	}
+    } else {
+	int	nblks = strcnt * strcnt * _inf.mybuflanes; /* number of blocks in one flush */
+	int	nth = curb / nblks;
+	size_t filpos = chunksize * (nth*nblks + Frank);
+	DEBUG(DLEVEL_BUFMGR) {
+	    dbgprintf("%s: %s NOWRITE curb(%d) filpos(%ld) nth(%d) nblks(%d) chunksize(%d) Frank(%d)\n",
+		      __func__, cls == 0 ?"WRITE_FLUSH":"CLOSE_FLUSH", curb, filpos, nth, nblks, chunksize, Frank);
+	}
+	cc = strsize;
     }
     io_write_bufupdate(info);
     info->buflanes = 0;
@@ -536,19 +532,17 @@ _iomiddle_close(int fd)
     }
     info =  &_inf.fdinfo[fd];
     DEBUG(DLEVEL_HIJACKED) { fprintf(stderr, "%s DO-CARE fd(%d)\n", __func__, fd); }
-    if (info->bufcount > 0 || info->buflanes > 0) {
+    if (info->bufcount > 0) {
 	size_t	sz;
 	DEBUG(DLEVEL_BUFMGR) {
 	    dbgprintf("%s: bufcount(%d)\n", __func__, info->bufcount);
 	}
-	if (!(info->buflanes == 0 && info->bufcount == 0)) {
-	    sz = buf_flush(info, 1);
-	    /* FIXME: how this error propagates ? */
-	    rc = (sz == 0 || sz == _inf.fdinfo[fd].strsize) ? 0 : -1;
-	    if (rc == -1) {
-		dbgprintf("%s: ERROR sz = %ld (frstrwcall=%d strsize(%ld))\n",
-			  __func__, sz, _inf.fdinfo[fd].frstrwcall, _inf.fdinfo[fd].strsize);
-	    }
+	sz = buf_flush(info, 1);
+	/* FIXME: how this error propagates ? */
+	rc = (sz == 0 || sz == _inf.fdinfo[fd].strsize) ? 0 : -1;
+	if (rc == -1) {
+	    dbgprintf("%s: ERROR sz = %ld (frstrwcall=%d strsize(%ld))\n",
+		      __func__, sz, _inf.fdinfo[fd].frstrwcall, _inf.fdinfo[fd].strsize);
 	}
     }
     /* io_fin() first to synchronize worker */
@@ -625,25 +619,20 @@ _iomiddle_write(int fd, const void *buf, size_t len)
 		  info->bufcount, _inf.mybufcount, len, info->strsize);
     }
     if (info->bufcount == _inf.mybufcount) {
-	info->buflanes++;
 	DEBUG(DLEVEL_BUFMGR) {
 	    dbgprintf("%s: info->buflanes(%d) mybuflanes(%d)\n", __func__, info->buflanes, _inf.mybuflanes);
 	}
-	if (info->buflanes == _inf.mybuflanes) {
-	    DEBUG(DLEVEL_BUFMGR) {
-		dbgprintf("%s: Goging to flush info->buflanes(%d) info->bufcount(%d)\n",
-			  __func__, info->buflanes, info->bufcount);
-	    }
-	    rc = buf_flush(info, 0);
-	    if (rc != len) {
-		fprintf(stderr, "%s: ERROR here rc(%ld)\n", __func__, rc);
-	    }
-	} else {
-	    info->bufcount = 0;
+	rc = buf_flush(info, 0);
+	if (rc != len) {
+	    dbgprintf("%s: ERROR here rc(%ld)\n", __func__, rc);
 	}
-	info->filtail += info->strcnt;
     }
-    //dbgprintf("%s: filtail(%d)\n", __func__, info->filtail);
+    {  /* next expected block */
+	size_t	nextpos = (info->filpos - len) + info->filchklen;
+	int	blk = POS_TO_BLK(nextpos, info->strsize);
+	info->filtail = blk;
+	// dbgprintf("%s: nextpos(%ld) filtail(%d)\n", __func__, (info->filpos - len) + info->filchklen, info->filtail);
+    }
     if (rc != len) {
 	fprintf(stderr, "%s: ERROR return rc(%ld)\n", __func__, rc);
     }
@@ -656,6 +645,7 @@ _iomiddle_write(int fd, const void *buf, size_t len)
 ssize_t
 _iomiddle_read(int fd, void *buf, size_t len)
 {
+    int	j;
     size_t	cc, rc = len;
     fdinfo *info;
 
@@ -672,54 +662,70 @@ _iomiddle_read(int fd, void *buf, size_t len)
 	abort();
     }
     info = &_inf.fdinfo[fd];
-    if (info->frstrwcall || info->lanepos == info->buflanes) {
-	size_t	blksize = info->filblklen;
-	off_t	filpos = info->filcurb * blksize;
-	DEBUG(DLEVEL_BUFMGR|DLEVEL_READ) {
-	    dbgprintf("%s:\t READ len(%ld) lanepos(%d) mybuflanes(%d) filpos(%ld) filcurb(%d) filpos(%ld)\n",
-		      __func__, info->bufsize*_inf.mybuflanes, info->lanepos, _inf.mybuflanes,
-		      info->filpos, info->filcurb, filpos);
-	}
-	/*
-	 * Though multiple lanes are requested, the single lane is isued for read
-	 */
+    if (info->frstrwcall || info->bufcount == info->bufend) {
+	int	curb = info->filcurb;
+	int	strcnt = info->strcnt;
+	size_t	chunksize = info->filchklen;
+	size_t	strsize = info->strsize;
+	int	nblks = strcnt * _inf.mybuflanes; /* number of blocks in one read */
+	int	lblks = strcnt * _inf.mybuflanes; /* number of blocks per one forworder */
+	int	nth = curb / nblks;
+	int	rblks = nth*nblks + lblks*Frank;
+	size_t	filpos = strsize * rblks;
+	size_t	filsize = strsize * lblks;
+	int	soff, uoff;
+
 	if (info->frstrwcall) { /* the first-time read/write call */
-	    io_setup(WRK_CMD_READ, fd, info->bufsize, filpos);
+	    io_setup(WRK_CMD_READ, fd, filsize, filpos);
 	    info->frstrwcall = 0;
 	}
-	/* info->sbuf will be set by io_issue */
-	cc = io_issue(WRK_CMD_READ, info->iofd, &info->sbuf, info->bufsize, filpos);
-	/* Though read opertaion returns error, other processes may success.
-	 * Thus error is checked after Scatter */
-	info->buflanes = cc/info->bufsize; /* determined by actual read size */
-	info->lanepos = 0; /* reset */
 	DEBUG(DLEVEL_BUFMGR|DLEVEL_READ) {
-	    dbgprintf("%s: \t new buflanes(%ld) readsize(%ld)/bufsize(%ld)\n", __func__, info->buflanes, cc, info->bufsize);
+	    dbgprintf("%s:\t READ fillen(%ld) filpos(%ld) curb(%d) "
+		      "strcnt(%d) rblks(%d) nblks(%d) nth(%d) strsize(%d)\n",
+		      __func__, filsize, filpos, curb, strcnt, rblks, nblks, nth, strsize);
 	}
-    } else {
-	cc = info->bufsize;
-    }
-    if (info->bufcount == 0) { // if (info->lanepos < info->buflanes) {
-	int	i, off = 0;
+	cc = io_issue(WRK_CMD_READ, info->iofd, &info->sbuf, filsize, filpos);
 	DEBUG(DLEVEL_BUFMGR|DLEVEL_READ) {
-	    dbgprintf("%s:\t FILL UBUF lanepos(%d) bufsize(%ld) buflanes(%d) strsize(%ld) cc(%ld)\n",
-		      __func__, info->lanepos, info->bufsize, info->buflanes,  info->strsize, cc);
+	dbgprintf("%s:\t\t READ cc(%ld) sbuf(%p)\n", __func__, cc, info->sbuf);
 	}
-	for (i = 0; i < Nprocs; i++) {
+	{
+	    size_t	exdata[2];
+	    if (cc < 0) {
+		exdata[0] = 0; exdata[1] = -1;
+	    } else {
+		exdata[0] = cc/info->strsize; exdata[1] = 0;
+	    }
 	    MPI_CALL(
-		MPI_Scatter(info->sbuf + info->lanepos*info->bufsize,
-			    info->strsize, MPI_BYTE,
-			    info->ubuf + off, info->strsize, MPI_BYTE,
-			    i, MPI_COMM_WORLD));
-	    off += info->strsize;
+		MPI_Allreduce(MPI_IN_PLACE, exdata, 2, MPI_LONG_LONG,
+			      MPI_SUM, MPI_COMM_WORLD));
+	    if (exdata[0] == 0) { /* no data is read */
+		dbgprintf("%s: NO DATA IS READ\n", __func__);
+		rc = 0;	goto ext;
+	    }
+	    if (exdata[1] < 0) { /* Errors happen */
+		dbgprintf("%s: READ ERROR\n", __func__);
+		rc = 0;	goto ext;
+	    }
+	    info->bufend = exdata[0]/info->strcnt; /* determined by actual read size */
 	}
-	if ((int64_t) cc < 0) {
-	    rc = cc; goto ext;
-	} else if (cc < info->bufsize && info->buflanes > 0) {
-	    /* truncated ? */
-	    rc = cc/Nprocs; goto ext;
+	soff = 0; uoff = 0; j = 0;
+	while (j < info->bufend) {
+	    int	i;
+	    int this_rank = j / _inf.mybuflanes;
+	    for (i = 0; i < _inf.mybuflanes && j < info->bufend; i++, j++) {
+		// dbgprintf("%s: j(%d) i(%d) this_rank(%d) soff(%d) uoff(%d) len(%d)\n",
+		// __func__, j, i, this_rank, soff, uoff, info->strsize);
+		MPI_CALL(
+		    MPI_Scatter(info->sbuf + soff,
+				info->strsize, MPI_BYTE,
+				info->ubuf + uoff, info->strsize, MPI_BYTE,
+				this_rank, MPI_COMM_WORLD));
+		uoff += info->strsize;
+		soff += chunksize;
+	    }
+	    soff = 0;
 	}
-	/* "cc = 0" is OK because such ranks do not have buffer data */
+	info->bufpos = 0; info->bufcount = 0;
     }
     DEBUG(DLEVEL_READ) {
 	dbgprintf("%s:\t bufpos(%d) len(%ld)\n", __func__, info->bufpos, len);
@@ -727,19 +733,13 @@ _iomiddle_read(int fd, void *buf, size_t len)
     memcpy(buf, info->ubuf + info->bufpos, len);
     info->bufpos += len;
     info->bufcount += 1;
-    if (info->bufcount == _inf.mybufcount) { /* info->bufpos == info->bufsize */
-	info->lanepos += 1;
-	info->bufpos = 0;
-	info->bufcount = 0;
-	info->filcurb += info->strcnt;
-	info->filtail += info->strcnt; /* next expected tail pointer */
-    }
+    info->filcurb += info->strcnt;
+    info->filtail += info->strcnt; /* next expected tail pointer */
     info->filpos += len;
 ext:
     DEBUG(DLEVEL_BUFMGR|DLEVEL_READ) {
-	dbgprintf("%s:\t RETURN blks(%d) tailblks(%d) bufcount(%d) mybufcount(%d) lanepos(%d) buflanes(%d)\n",
-		  __func__, info->filcurb, info->filtail, info->bufcount,
-		  _inf.mybufcount, info->lanepos, info->buflanes);
+	dbgprintf("%s:\t RETURN tailblks(%d) bufcount(%d) bufpos(%d)\n",
+		  __func__, info->filtail, info->bufcount, info->bufpos);
     }
     return rc;
 }
@@ -759,8 +759,7 @@ lseek_general(int fd, off64_t reqfilpos)
     info = &_inf.fdinfo[fd];
     rc = info->filpos = reqfilpos;
     if (!(Frank == 0 && reqfilpos == 0)) {
-	int	nstr   = reqfilpos/info->strsize;
-	int	blks   = REQBLK_TO_CURBLK(nstr, info->strcnt, info->strcnt, Frank);
+	int	blks   = POS_TO_BLK(reqfilpos, info->strsize);
 
 	DEBUG(DLEVEL_READ) {
 	    dbgprintf("%s: reqfilpos(%ld) blks(%d) tailblks(%d) Frank(%d)\n",
@@ -1005,9 +1004,10 @@ worker(void *p)
 	    }
 	    /* worker is still working here */
 	    Wwpos += Wwlen;
+	    // dbgprintf("%s:\t IO_READ file-pos(%ld), size(%ld) Wtiktok(%d)\n", __func__, Wwpos, Wwsiz, Wtiktok);
 	    Wwret = io_read(Wcfd, _inf.fdinfo[Wcfd].dbuf[Wtiktok], Wwsiz, Wwpos);
 	    Wcpos = Wwpos;
-	    dbgprintf("%s: Wwret(%ld) Wwpos(%ld) Wwsiz(%ld)\n", __func__, Wwret, Wwpos, Wwsiz);
+	    // dbgprintf("%s:\t\t Wwret(%ld) Wwpos(%ld) Wwsiz(%ld)\n", __func__, Wwret, Wwpos, Wwsiz);
 	    worker_sigdone(Wwret); /* signal to the client, go ahead */
 	} else if (Wcmd == WRK_CMD_FIN) {
 	    DEBUG(DLEVEL_WORKER) {
@@ -1122,14 +1122,20 @@ io_setup(io_cmd cmd, int fd, size_t siz, off64_t pos)
     info = &_inf.fdinfo[fd];
     if (cmd == WRK_CMD_WRITE) {
 	info->dbuf[0] = info->sbuf;
-	Wcret = Wwret = Wwsiz = info->bufsize; Wtiktok = 0;
+	Wcret = Wwret = 0; Wwsiz = info->bufsize; Wtiktok = 0;
     } else if (cmd == WRK_CMD_READ) {
+	int	strcnt = info->strcnt;
+	size_t	strsize = info->strsize;
 	/* set double bufferring and initial worker variables */
 	info->dbuf[0] = info->sbuf;
-	Wcret = Wwret = Wwsiz = info->bufsize; Wwpos = Wcpos = pos; Wtiktok = 0;
-	Wwlen = info->filblklen * info->strcnt;
+	Wwpos = Wcpos = pos; Wtiktok = 0;
+	Wcret = Wwret = Wwsiz = strsize * strcnt * _inf.mybuflanes;
+	Wwlen = strsize * strcnt * strcnt * _inf.mybuflanes;
+	DEBUG(DLEVEL_READ) {
+	    dbgprintf("%s: Wcpos(%d) Wwpos(%d) Wwlen(%d) Wcret(%ld) Wsiz(%ld) bufsize(%d) lanes(%d)\n", __func__, Wcpos, Wwpos, Wwlen, Wcret, Wwsiz, info->bufsize, _inf.mybuflanes);
+	}
 	/* prefetching here */
-	io_read(info->iofd, info->sbuf, info->bufsize, pos);
+	io_read(info->iofd, info->sbuf, Wwsiz, pos);
     } else {
 	fprintf(stderr, "%s: internal error: unknown command %p\n", __func__, cmd);
 	abort();

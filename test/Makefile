@@ -10,15 +10,24 @@ myverify: myverify.o testlib.h testlib.o
 testlib.o: testlib.c testlib.h
 	$(MPICC) $(CFLAGS) -c -o $@ $<
 #
-run-test-all:
+#
+#
+run-test-all: run-test-write run-test-read
+#
+run-test-write: run-test-gen_ref run-test-simple run-test-multi run-test-rest
+run-test-gen_ref:
 	sh ./run-x86-test-write.sh gen_ref
+run-test-simple:
 	sh ./run-x86-test-write.sh simple
+run-test-multi:
 	sh ./run-x86-test-write.sh multi
+run-test-rest:
 	sh ./run-x86-test-write.sh worker
 	sh ./run-x86-test-write.sh multi-worker
 	sh ./run-x86-test-write.sh verify results-simple
 	sh ./run-x86-test-write.sh verify results-multi-worker
 #
+run-test-read:
 	sh ./run-x86-test-read.sh simple
 	sh ./run-x86-test-read.sh multi
 	sh ./run-x86-test-read.sh worker
