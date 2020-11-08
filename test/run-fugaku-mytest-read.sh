@@ -1,6 +1,6 @@
 #!/bin/sh
 #------ pjsub option --------#
-#PJM -N "IO-MIDDLE" # jobname
+#PJM -N "IO-MIDDLE-READ" # jobname
 #PJM -S		# output statistics
 #PJM --spath "results-middle/%n.%j.stat"
 #PJM -o "results-middle/%n.%j.out"
@@ -38,7 +38,6 @@
 #	PJM --llio perf
 
 DDIR=./results-data-middle
-rm -f $DDIR/tdata-*
 
 MPIOPT="-ofout ./results-middle/%n.%j.out -oferr ./results-middle/%n.%j.err"
 LEN=1920
@@ -53,7 +52,7 @@ echo "IOMIDDLE_WORKER  = " $IOMIDDLE_WORKER
 echo "IOMIDDLE_LANES   = " $IOMIDDLE_LANES
 echo "LEN = " $LEN; echo "NP = " $NP
 
-mpiexec -n $NP $MPIOPT ./mytest -l $LEN -f $DDIR/tdata-$LEN-0
+mpiexec -n $NP $MPIOPT ./mytest -l $LEN -r -v -f $DDIR/tdata-$LEN-0
 
 echo
 echo
@@ -69,7 +68,7 @@ echo "IOMIDDLE_WORKER  = " $IOMIDDLE_WORKER
 echo "IOMIDDLE_LANES   = " $IOMIDDLE_LANES
 echo "LEN = " $LEN; echo "NP = " $NP
 
-mpiexec -n $NP $MPIOPT ./mytest -l $LEN -f $DDIR/tdata-$LEN-1
+mpiexec -n $NP $MPIOPT ./mytest -l $LEN -r -v -f $DDIR/tdata-$LEN-1
 echo
 echo
 echo
@@ -82,7 +81,7 @@ echo "IOMIDDLE_LANES   = " $IOMIDDLE_LANES
 echo "IOMIDDLE_WORKER  = " $IOMIDDLE_WORKER
 echo "LEN = " $LEN; echo "NP = " $NP
 
-mpiexec -n $NP $MPIOPT ./mytest -l $LEN -f $DDIR/tdata-$LEN-2
+mpiexec -n $NP $MPIOPT ./mytest -l $LEN -r -v -f $DDIR/tdata-$LEN-2
 
 echo
 echo
@@ -96,7 +95,7 @@ echo "IOMIDDLE_LANES   = " $IOMIDDLE_LANES
 echo "IOMIDDLE_WORKER  = " $IOMIDDLE_WORKER
 echo "LEN = " $LEN; echo "NP = " $NP
 
-mpiexec -n $NP $MPIOPT ./mytest -l $LEN -f $DDIR/tdata-$LEN-3
+mpiexec -n $NP $MPIOPT ./mytest -l $LEN -r -v -f $DDIR/tdata-$LEN-3
 
 echo
 echo

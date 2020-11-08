@@ -1,6 +1,6 @@
 #!/bin/sh
 #------ pjsub option --------#
-#PJM -N "IO-MIDDLE" # jobname
+#PJM -N "IO-MIDDLE-WRITE" # jobname
 #PJM -S		# output statistics
 #PJM --spath "results-middle/%n.%j.stat"
 #PJM -o "results-middle/%n.%j.out"
@@ -11,15 +11,19 @@
 #	PJM -L "node=16"
 #	PJM -L "node=64"
 #	PJM -L "node=96"
-#PJM -L "node=192"
+#	PJM -L "node=192"
+#	PJM -L "node=4x6x16"
+#PJM -L "node=6x12x16"
 #	PJM -L "node=384"
 #	PJM -L "node=768"
 #	PJM -L "node=1152"
 #	PJM -L "node=32x18x16:strict"
 #PJM --mpi "max-proc-per-node=1"
-#PJM -L "elapse=00:30:00"
+#PJM -L "elapse=01:50:00"
 #	PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-huge1,jobenv=linux"
-#PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-sin"
+#	PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-sin"
+#	PJM -L "rscunit=rscunit_ft01,rscgrp=eap-small"
+#PJM -L "rscunit=rscunit_ft01,rscgrp=eap-large"
 #PJM -L proc-core=unlimited
 #export XOS_MMM_L_HPAGE_TYPE=none
 
@@ -27,22 +31,26 @@
 #PJM --llio sio-read-cache=off
 #PJM --llio cn-cached-write-size=0
 #	PJM --llio stripe-count=24
-#PJM --llio stripe-count=6
-#PJM --llio sharedtmp-size=95258Mi
-#PJM --llio localtmp-size=0
-#PJM --llio cn-cache-size=128Mi
-#PJM --llio stripe-size=2048Ki
+#	PJM --llio stripe-count=6
+#	PJM --llio sharedtmp-size=95258Mi
+#	PJM --llio localtmp-size=0
+#	PJM --llio cn-cache-size=128Mi
+#	PJM --llio stripe-size=2048Ki
 #	PJM --llio async-close=on
 #PJM --llio async-close=off
 #PJM --llio auto-readahead=on
 #	PJM --llio perf
 
+#	384 node
+# 1152	6x12x16
 DDIR=./results-data-middle
 rm -f $DDIR/tdata-*
 
 MPIOPT="-ofout ./results-middle/%n.%j.out -oferr ./results-middle/%n.%j.err"
-LEN=1920
-NP=192
+#LEN=3840
+#LEN=11520
+LEN=4608
+NP=1152
 
 echo "########################################################################"
 echo "WITHOUT IO-MIDDLE"

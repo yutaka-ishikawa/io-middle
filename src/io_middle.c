@@ -199,7 +199,8 @@ buf_init(int fd, int strsize, int frank)
     _inf.fdinfo[fd].bufsize = _inf.fdinfo[fd].filchklen;
     _inf.fdinfo[fd].ubuf = malloc(_inf.fdinfo[fd].bufsize*_inf.mybuflanes);
     _inf.fdinfo[fd].sbuf = malloc(_inf.fdinfo[fd].bufsize*_inf.mybuflanes);
-    _inf.fdinfo[fd].dbuf[0] = 0;
+    /* for double buffering */
+    _inf.fdinfo[fd].dbuf[0] = _inf.fdinfo[fd].sbuf;
     _inf.fdinfo[fd].dbuf[1] = malloc(_inf.fdinfo[fd].bufsize*_inf.mybuflanes);
     IOMIDDLE_IFERROR(
 	(_inf.fdinfo[fd].ubuf == NULL || _inf.fdinfo[fd].sbuf == NULL
@@ -382,7 +383,7 @@ buf_flush(fdinfo *info, int cls)
     while (j < info->bufcount) {
 	this_rank = j / _inf.mybuflanes;
 	for (i = 0; i < _inf.mybuflanes && j < info->bufcount; i++, j++) {
-	    // dbgprintf("%s: j(%d) this_rank(%d) uoff(%d)\n", __func__, j, this_rank, uoff);
+	    //dbgprintf("%s: j(%d) this_rank(%d) uoff(%d) soff(%d) sbuf(%p)\n", __func__, j, this_rank, uoff, soff, info->sbuf);
 	    MPI_CALL(
 		MPI_Gather(info->ubuf + uoff, strsize, MPI_BYTE,
 			   info->sbuf + soff, strsize, MPI_BYTE,
@@ -690,8 +691,8 @@ _iomiddle_read(int fd, void *buf, size_t len)
 	}
 	{
 	    size_t	exdata[2];
-	    if (cc < 0) {
-		exdata[0] = 0; exdata[1] = -1;
+	    if ((int64_t) cc < 0) {
+		exdata[0] = 0; exdata[1] = -1ULL;
 	    } else {
 		exdata[0] = cc/info->strsize; exdata[1] = 0;
 	    }
@@ -702,7 +703,7 @@ _iomiddle_read(int fd, void *buf, size_t len)
 		dbgprintf("%s: NO DATA IS READ\n", __func__);
 		rc = 0;	goto ext;
 	    }
-	    if (exdata[1] < 0) { /* Errors happen */
+	    if ((int64_t) exdata[1] < 0) { /* Errors happen */
 		dbgprintf("%s: READ ERROR\n", __func__);
 		rc = 0;	goto ext;
 	    }
@@ -1121,13 +1122,11 @@ io_setup(io_cmd cmd, int fd, size_t siz, off64_t pos)
     }
     info = &_inf.fdinfo[fd];
     if (cmd == WRK_CMD_WRITE) {
-	info->dbuf[0] = info->sbuf;
 	Wcret = Wwret = 0; Wwsiz = info->bufsize; Wtiktok = 0;
     } else if (cmd == WRK_CMD_READ) {
 	int	strcnt = info->strcnt;
 	size_t	strsize = info->strsize;
-	/* set double bufferring and initial worker variables */
-	info->dbuf[0] = info->sbuf;
+	/* initial worker variables */
 	Wwpos = Wcpos = pos; Wtiktok = 0;
 	Wcret = Wwret = Wwsiz = strsize * strcnt * _inf.mybuflanes;
 	Wwlen = strsize * strcnt * strcnt * _inf.mybuflanes;

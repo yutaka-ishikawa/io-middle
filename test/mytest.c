@@ -168,6 +168,7 @@ main(int argc, char **argv)
 	exit(-1);
     }
     timer_init();
+    /* tot_fsize is in MiB */
     tot_fsize = ((double)(bufsiz*nprocs))/(1024.0*1024.);
     if (myrank == 0) {
 	if (rwflag & DO_WRITE) {
@@ -225,6 +226,7 @@ main(int argc, char **argv)
 	    myprintf("\nERROR:  # of errors %d\n", errors);
 	} else {
 	    myprintf("SUCCESS\n");
+	    /* bw is in MiB/sec --> thus divided by 1024 to display GiB/sec */
 	    if (rwflag & DO_WRITE) {
 		eltime = TIMER_SECOND(timer_et[0] - timer_st[0]);
 		bw = tot_fsize/eltime;
@@ -241,8 +243,8 @@ main(int argc, char **argv)
 		bw = tot_fsize/eltime;
 		myprintf("\tRead: \n"
 			 "\t   Time: %12.9f second\n"
-			 "\t     BW: %12.9f MiB/sec\n",
-			 (float) eltime, (float) bw);
+			 "\t     BW: %12.9f GiB/sec\n",
+			 (float) eltime, (float) (bw/1024.));
 		/* GiB/sec */
 		myprintf("\n@read,%d,%12.9f\n",
 			 nprocs, (float) (bw/1024.));
