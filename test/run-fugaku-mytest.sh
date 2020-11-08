@@ -9,20 +9,21 @@
 #	PJM -L "node=2"
 #	PJM -L "node=3"
 #	PJM -L "node=16"
-#PJM -L "node=64"
+#	PJM -L "node=64"
 #	PJM -L "node=96"
+#PJM -L "node=192"
 #	PJM -L "node=384"
 #	PJM -L "node=768"
 #	PJM -L "node=1152"
 #	PJM -L "node=32x18x16:strict"
 #PJM --mpi "max-proc-per-node=1"
-#PJM -L "elapse=00:05:00"
+#PJM -L "elapse=00:30:00"
 #	PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-huge1,jobenv=linux"
-#PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-sin,jobenv=linux"
+#PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-sin"
 #PJM -L proc-core=unlimited
 #export XOS_MMM_L_HPAGE_TYPE=none
 
-MPIOPT="-of ./results-middle/%n.%j.out"
+MPIOPT="-ofout ./results-middle/%n.%j.out -oferr ./results-middle/%n.%j.err"
 
 #PJM --llio cn-read-cache=off
 #PJM --llio sio-read-cache=off
@@ -39,12 +40,19 @@ MPIOPT="-of ./results-middle/%n.%j.out"
 #	PJM --llio perf
 
 export LD_PRELOAD=../src/io_middle.so
-export IOMIDDLE_WORKER=1
-export IOMIDDLE_LANES=4
-
+#####export LD_LIBRARY_PATH=../src/io_middle.so:$LD_LIBRARY_PATH
+echo "LD_LIBRARY_PATH= " $LD_LIBRARY_PATH
+#export IOMIDDLE_WORKER=1
+#export IOMIDDLE_LANES=4
+export IOMIDDLE_CONFIRM=1
 export IOMIDDLE_CARE_PATH=./results-middle/
-mpiexec $MPIOPT ./mytest -l 3000 -f ./results-middle/tdata-3
-printenv
+
+mpiexec $MPIOPT ./mytest -l 192 -f ./results-middle/tdata-192
+
+#mpiexec $MPIOPT ./mytest -l 192 -f ./results-middle/tdata-192
+
+#mpiexec $MPIOPT ./mytest -l 3000 -f ./results-middle/tdata-3
+#printenv
 exit
 
 mkdir /share/tmp/

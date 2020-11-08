@@ -1,9 +1,12 @@
 CC = fccpx
 LD = ld
-###CFLAGS = -Wall -O2 -g
-##CFLAGS_SHARED= -Wall -O2 -g -fpic
-CFLAGS = -Wall -O2 -g -Nclang
-CFLAGS_SHARED= -Wall -O2 -g -fpic -Nclang
+
+CFLAGS = -O2 -g
+CFLAGS_SHARED= -O2 -g -fpic
+
+#CFLAGS = -Wall -O2 -g -Nclang
+#CFLAGS_SHARED= -Wall -O2 -g -fpic -Nclang
+
 LDFLAGS_SHARED= -shared
 
 INCLUDES =

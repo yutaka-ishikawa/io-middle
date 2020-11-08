@@ -21,20 +21,20 @@
     ret (*__real_ ## name) args = NULL;	\
     ret (*_hijacked_ ## name) args = NULL;
     
-#define HIJACK(ret, func)				\
+#define HIJACK(type, func)				\
     {							\
 	if (_hijack_init == 0) {			\
 	    _hijack_init = 1;				\
 	    _myhijack_init();				\
 	}						\
-	if (__real_ ## func == NULL) {			\
-	    __real_ ## func = dlsym(RTLD_NEXT, #func);	\
+	if ((void*) __real_ ## func == (void*) NULL) {	\
+	    __real_ ## func = type dlsym(RTLD_NEXT, #func);	\
 	}						\
     }
 
-#define HIJACK_DO(ret, func, args)			\
+#define HIJACK_DO(type, ret, func, args)		\
     {							\
-	HIJACK(ret, func);				\
+	HIJACK(type, func);				\
 	if (_hijacked_ ## func) {			\
 	    ret = _hijacked_ ## func args;		\
 	} else {					\
@@ -100,7 +100,7 @@ int
 creat(const char* path, mode_t mode)
 {
     int	ret;
-    HIJACK_DO(ret, creat, (path, mode));
+    HIJACK_DO((int (*)(const char*, mode_t)), ret, creat, (path, mode));
     return ret;
 }
 
@@ -110,7 +110,7 @@ open(const char *path, int flags, ...)
     int		ret;
     mode_t	mode;
 
-    HIJACK(ret, open);
+    HIJACK((int (*)(const char *, int, ...)), open);
     /* go through if no hijacked */
     if (flags & O_CREAT) {
         va_list arg;
@@ -138,7 +138,7 @@ close(int fd)
     int	ret;
 
     // fprintf(stderr, "CLOSE %d 0x%p %ld\n", fd);
-    HIJACK_DO(ret, close, (fd));
+    HIJACK_DO((int (*)(int)), ret, close, (fd));
     return ret;
 }
 
@@ -147,7 +147,7 @@ ssize_t write(int fd, const void *buf, size_t count)
     ssize_t	ret;
 
     // fprintf(stderr, "WRITE %d 0x%p %ld\n", fd, buf, count);
-    HIJACK_DO(ret, write, (fd, buf, count));
+    HIJACK_DO((ssize_t (*)(int, const void*, size_t)), ret, write, (fd, buf, count));
     return ret;
 }
 
@@ -156,7 +156,7 @@ ssize_t read(int fd, void *buf, size_t count)
     ssize_t	ret;
 
     // fprintf(stderr, "READ %d 0x%p %ld\n", fd, buf, count);
-    HIJACK_DO(ret, read, (fd, buf, count));
+    HIJACK_DO((ssize_t (*)(int, void*, size_t)), ret, read, (fd, buf, count));
     return ret;
 }
 
@@ -164,7 +164,7 @@ off_t
 lseek(int fd, off_t offset, int whence)
 {
     ssize_t	ret;
-    HIJACK_DO(ret, lseek, (fd, offset, whence));
+    HIJACK_DO((ssize_t (*)(int, off_t, int)), ret, lseek, (fd, offset, whence));
     return ret;
 }
 
@@ -172,6 +172,6 @@ off64_t
 lseek64(int fd, off64_t offset, int whence)
 {
     ssize_t	ret;
-    HIJACK_DO(ret, lseek64, (fd, offset, whence));
+    HIJACK_DO((off64_t (*)(int, off64_t, int)), ret, lseek64, (fd, offset, whence));
     return ret;
 }
