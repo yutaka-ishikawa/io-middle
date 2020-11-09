@@ -9,17 +9,22 @@
  *	3) read and write sizes are always the same length over all processes.
  *	   This length is used for stripe size.
  * Captured system calls:
- *	creat, open, close, read, lseek64, write
- * Shell environment:
+ *	creat, open, close, read, lseek, lseek64, write
+ * Shell environments:
  *	IOMIDDLE_CARE_PATH 
  *	   -- file path taken care by this middleware.
  *	     The user must specify this variable.
- *	IOMIDDLE_LANES
- *	   -- Speficfy the number of lanes.
- *	     one lane is (stripsize * stripe count)
+ *	IOMIDDLE_CONFIRM
+ *	   -- display this middleware works in stderr.
+ *	IOMIDDLE_FORWARDER
+ *	   -- Number of IO forwarder. The number must divide proccess count without remainder.
+ *	     If not specify, all proccesses are IO forwarder.
  *	IOMIDDLE_WORKER
  *	   -- if specify, asynchronous I/O read/writer is performed 
  *	      by a worker thread.
+ *	IOMIDDLE_LANES
+ *	   -- Speficfy the number of lanes. One lane is (stripsize * stripe count)
+ *	      This is effective if IOMIDDLE_FORWARDER is not specify.
  *	IOMIDDLE_TUNC
  *	   -- if specify, enable global file truncation at the close time.
  *	      Note that this behavior is different than POSIX,
@@ -143,7 +148,11 @@ rank_init()
     if (Myrank == 0) {
 	char        *cp = getenv("IOMIDDLE_CONFIRM");
 	if (cp && atoi(cp) > 0) {
-	    fprintf(stderr, "IO-MIDDLE is attached\n"); fflush(stderr);
+	    fprintf(stderr,
+		    "IO-MIDDLE is attached\n"
+		    " CARE_PATH = %s\n"
+		    " IO FORWADER is %s\n",
+		    care_path, Fwrdr == 1 ? "ON" : "OFF"); fflush(stderr);
 	}
     }
 }
@@ -181,14 +190,37 @@ info_init(const char *path, int fd, int flags, int mode)
     strcpy(info->path, path);
 }
 
+/*
+ * Global operation 
+ */
 static void
 buf_init(int fd, int strsize, int frank)
 {
     int	strcnt = Nprocs;
 
-    _inf.mybufcount = strcnt * _inf.mybuflanes;
+    if (Fwrdr) {
+	int	color = frank/Fwrdr;
+	int	key = frank - (color*Fwrdr);
+
+	Cprocs = Nprocs/Fwrdr;
+	if (Cprocs*Fwrdr != Nprocs) {
+	    dbgprintf("%s: Forwarder count must divide proc count exactly\n", __func__);
+	    abort();
+	}
+	MPI_CALL(MPI_Comm_split(MPI_COMM_WORLD, color, key, &Clstr));
+	Color = color;	Crank = key;
+	DEBUG(DLEVEL_FWRDR) {
+	    dbgprintf("%s: Color(%d) Cprocs(%d) Crank(%d)\n", __func__, Color, Cprocs, Crank);
+	}
+	if (_inf.mybuflanes != 1) {
+	    fprintf(stderr, "io_middle: IOMIDDLE_LANES is set to 1 from %d\n", _inf.mybuflanes);
+	}
+	_inf.mybufcount = 1; /* set to 1 */
+    } else {
+	/* _inf.mybuflanes = is set by shell environment variable, IOMIDDLE_LANES */
+	_inf.mybufcount = strcnt * _inf.mybuflanes;
+    }
     _inf.frank = frank;
-    /* _inf.mybuflanes = is set by shell environment variable */
     _inf.fdinfo[fd].notfirst = 1;
     _inf.fdinfo[fd].frstrwcall = 1;
     _inf.fdinfo[fd].strsize = strsize;
@@ -335,95 +367,125 @@ io_read(int fd, void *buf, size_t size, off64_t pos)
     return sz;
 }
 
+/*
+ * buf_flush
+ *  from write: 
+ *  from close: 
+ * ubuf : user data buffer, contining stripe * bufcount
+ * sbuf : system data buffer
+ * ubuf --> sbuf per stripe
+ *
+ * bufcount: # of strips has been written to the buffer
+ *   (nprocs == bufcount): buffers are fulled over all processes
+ *   (nprocs < bufcount):  ranks, smaller than bufcount, only keep data
+ * Variables with prefix "fil" are file view
+ *   filpos:  pointer
+ *   filcurb: current block number (stripe size)
+ *	Each block is the maximum contiguous area in file view.
+ *		writing/reading to/from file is performed per block.
+ *		filcurb is advanced by stripe count, not +1.
+ *   filtail: last block buffered in local
+ *   filchklen: chunk length (stripe size * nprocs)
+ *		stripe count is equal to nprocs
+ *  E.g.
+ *	         rank 0	  rank 1     rank 2     rank 3
+ *  ubuf   #0#1#2#3   #0#1#2#3   #0#1#2#3   #0#1#2#3
+ *         <------------- Exchange ---------------->
+ *	sbuf    chunk#0   chunk#1   chunk#2	chunk#3
+ */
 static size_t
 buf_flush(fdinfo *info, int cls)
 {
     size_t	cc = -1ULL;
-    int	i, j, this_rank;
-    int uoff, soff, my_wlen = 0;
     size_t	sz;
     int		curb = info->filcurb;
     int		strcnt = info->strcnt;
     size_t	strsize = info->strsize;
     size_t	chunksize = info->filchklen;
 
-    if (info->dirty == 0) { /* no need to flush */
-	return 0;
-    }
-    /*
-     *  from write: 
-     *  from close: 
-     * ubuf : user data buffer, contining stripe * bufcount
-     * sbuf : system data buffer
-     * ubuf --> sbuf per stripe
-     *
-     * bufcount: # of strips has been written to the buffer
-     *   (nprocs == bufcount): buffers are fulled over all processes
-     *   (nprocs < bufcount):  ranks, smaller than bufcount, only keep data
-     * Variables with prefix "fil" are file view
-     *   filpos:  pointer
-     *   filcurb: current block number (stripe size)
-     *	Each block is the maximum contiguous area in file view.
-     *		writing/reading to/from file is performed per block.
-     *		filcurb is advanced by stripe count, not +1.
-     *   filtail: last block buffered in local
-     *   filchklen: chunk length (stripe size * nprocs)
-     *		stripe count is equal to nprocs
-     *  E.g.
-     *	         rank 0	  rank 1     rank 2     rank 3
-     *  ubuf   #0#1#2#3   #0#1#2#3   #0#1#2#3   #0#1#2#3
-     *         <------------- Exchange ---------------->
-     *	sbuf    chunk#0   chunk#1   chunk#2	chunk#3
-     */
-    if (cls) { /* in order to flush remaining data */
-	info->buflanes += 1;
-    }
-    j = 0; uoff = 0; soff = 0;
-    /* 0 < info->bufcount <= _inf.mybufcount */
-    while (j < info->bufcount) {
-	this_rank = j / _inf.mybuflanes;
-	for (i = 0; i < _inf.mybuflanes && j < info->bufcount; i++, j++) {
-	    //dbgprintf("%s: j(%d) this_rank(%d) uoff(%d) soff(%d) sbuf(%p)\n", __func__, j, this_rank, uoff, soff, info->sbuf);
-	    MPI_CALL(
-		MPI_Gather(info->ubuf + uoff, strsize, MPI_BYTE,
-			   info->sbuf + soff, strsize, MPI_BYTE,
-			   this_rank, MPI_COMM_WORLD));
-	    uoff += strsize;
-	    soff += chunksize;
-	    info->filcurb += strcnt;
+    if (info->dirty == 0) { /* no need to flush */ return 0; }
+    if (Fwrdr) { /* IO forwarders only get data */
+	int	forwarder = 0;
+	if (info->bufcount != 1 && _inf.mybuflanes != 1) {
+	    dbgprintf("%s: bufcount(%d) and mybuflanes(%d) must be 1\n",
+		      __func__, info->bufcount, _inf.mybuflanes);
+	    abort();
 	}
-	if (this_rank == Myrank) {
-	    my_wlen = soff; /* saved */
-	}
-	soff = 0;
-    }
-    if (my_wlen > 0) {
-	int	nblks = strcnt * strcnt * _inf.mybuflanes; /* number of blocks in one flush */
-	int	lblks = strcnt * _inf.mybuflanes; /* number of blocks per one forworder */
-	int	nth = curb / nblks;
-	int	wblks = nth*nblks + lblks*Frank;
-	size_t filpos = strsize * wblks;
-	
-	DEBUG(DLEVEL_BUFMGR) {
-	    dbgprintf("%s: %s WRITE curb(%d) w-blks(%d) filpos(%ld) wlen(%ld) nth(%d) nblks(%d) chunksize(%d) Frank(%d)\n",
-		      __func__, cls == 0 ?"WRITE_FLUSH":"CLOSE_FLUSH", curb, wblks, filpos, my_wlen, nth, nblks, chunksize, Frank);
-	}
-	sz = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf, my_wlen, filpos);
-	if (sz == 0 || sz == my_wlen) { /* first io_issue is always zero */
-	    cc = strsize;
+	MPI_CALL(MPI_Gather(info->ubuf, strsize, MPI_BYTE,
+			    info->sbuf, strsize, MPI_BYTE,
+			    forwarder, Clstr));
+	if (forwarder == Crank) {
+	    size_t	filpos = curb*strsize;
+	    size_t	wlen = strsize*Cprocs;
+	    // dbgprintf("%s: WRITE curb(%d) filpos(%ld) wlen(%ld)\n", __func__, curb, filpos, wlen);
+	    sz = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf, wlen, filpos);
+	    if (sz == 0 || sz == wlen) { /* first io_issue is always zero */
+		cc = strsize;
+	    } else {
+		dbgprintf("%s: ERROR cc(%ld) wlen(%ld)\n", __func__, cc, wlen);
+		cc = -1ULL;
+	    }
 	} else {
-	    dbgprintf("%s: ERROR cc(%ld) my_wlen(%ld)\n", __func__, cc, my_wlen);
-	    cc = -1ULL;
+	    cc = strsize;
 	}
-    } else {
-	int	nblks = strcnt * strcnt * _inf.mybuflanes; /* number of blocks in one flush */
-	int	nth = curb / nblks;
-	size_t filpos = chunksize * (nth*nblks + Frank);
-	DEBUG(DLEVEL_BUFMGR) {
-	    dbgprintf("%s: %s NOWRITE curb(%d) filpos(%ld) nth(%d) nblks(%d) chunksize(%d) Frank(%d)\n",
-		      __func__, cls == 0 ?"WRITE_FLUSH":"CLOSE_FLUSH", curb, filpos, nth, nblks, chunksize, Frank);
+	info->filcurb += strcnt;
+    } else { /* All ranks get and write data */
+	int	i, this_rank;
+	int	my_wlen = 0;
+	int	j = 0, uoff = 0, soff = 0;
+
+	if (cls) { /* in order to flush remaining data */
+	    info->buflanes += 1;
 	}
-	cc = strsize;
+	/* 0 < info->bufcount <= _inf.mybufcount */
+	while (j < info->bufcount) {
+	    this_rank = j / _inf.mybuflanes;
+	    for (i = 0; i < _inf.mybuflanes && j < info->bufcount; i++, j++) {
+		//dbgprintf("%s: j(%d) this_rank(%d) uoff(%d) soff(%d) sbuf(%p)\n",
+		// __func__, j, this_rank, uoff, soff, info->sbuf);
+		MPI_CALL(
+		    MPI_Gather(info->ubuf + uoff, strsize, MPI_BYTE,
+			       info->sbuf + soff, strsize, MPI_BYTE,
+			       this_rank, MPI_COMM_WORLD));
+		uoff += strsize;
+		soff += chunksize;
+		info->filcurb += strcnt;
+	    }
+	    if (this_rank == Myrank) {
+		my_wlen = soff; /* saved */
+	    }
+	    soff = 0;
+	}
+	if (my_wlen > 0) {
+	    int	nblks = strcnt * strcnt * _inf.mybuflanes; /* number of blocks in one flush */
+	    int	lblks = strcnt * _inf.mybuflanes; /* number of blocks per one forworder */
+	    int	nth = curb / nblks;
+	    int	wblks = nth*nblks + lblks*Frank;
+	    size_t filpos = strsize * wblks;
+	
+	    DEBUG(DLEVEL_BUFMGR) {
+		dbgprintf("%s: %s WRITE curb(%d) w-blks(%d) filpos(%ld) wlen(%ld) "
+			  "nth(%d) nblks(%d) chunksize(%d) Frank(%d)\n",
+			  __func__, cls == 0 ?"WRITE_FLUSH":"CLOSE_FLUSH", curb, wblks, filpos,
+			  my_wlen, nth, nblks, chunksize, Frank);
+	    }
+	    sz = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf, my_wlen, filpos);
+	    if (sz == 0 || sz == my_wlen) { /* first io_issue is always zero */
+		cc = strsize;
+	    } else {
+		dbgprintf("%s: ERROR cc(%ld) my_wlen(%ld)\n", __func__, cc, my_wlen);
+		cc = -1ULL;
+	    }
+	} else {
+	    int	nblks = strcnt * strcnt * _inf.mybuflanes; /* number of blocks in one flush */
+	    int	nth = curb / nblks;
+	    size_t filpos = chunksize * (nth*nblks + Frank);
+	    DEBUG(DLEVEL_BUFMGR) {
+		dbgprintf("%s: %s NOWRITE curb(%d) filpos(%ld) nth(%d) nblks(%d) chunksize(%d) Frank(%d)\n",
+			  __func__, cls == 0 ?"WRITE_FLUSH":"CLOSE_FLUSH", curb, filpos, nth, nblks, chunksize, Frank);
+	    }
+	    cc = strsize;
+	}
     }
     io_write_bufupdate(info);
     info->buflanes = 0;
@@ -615,9 +677,9 @@ _iomiddle_write(int fd, const void *buf, size_t len)
     info->filpos += len;
     info->dirty = 1;
     DEBUG(DLEVEL_BUFMGR) {
-	dbgprintf("bufcount(%d) mybufcount(%d) len(%ld) "
+	dbgprintf("%s: bufcount(%d) mybufcount(%d) len(%ld) "
 		  "info->strsize(%d)\n",
-		  info->bufcount, _inf.mybufcount, len, info->strsize);
+		  __func__, info->bufcount, _inf.mybufcount, len, info->strsize);
     }
     if (info->bufcount == _inf.mybufcount) {
 	DEBUG(DLEVEL_BUFMGR) {
@@ -632,7 +694,6 @@ _iomiddle_write(int fd, const void *buf, size_t len)
 	size_t	nextpos = (info->filpos - len) + info->filchklen;
 	int	blk = POS_TO_BLK(nextpos, info->strsize);
 	info->filtail = blk;
-	// dbgprintf("%s: nextpos(%ld) filtail(%d)\n", __func__, (info->filpos - len) + info->filchklen, info->filtail);
     }
     if (rc != len) {
 	fprintf(stderr, "%s: ERROR return rc(%ld)\n", __func__, rc);
@@ -878,6 +939,10 @@ _myhijack_init()
 	printf("IOMIDDLE_CARE_PATH must be specified\n");
 	exit(-1);
     }
+    cp = getenv("IOMIDDLE_FORWARDER");
+    if (cp && atoi(cp) > 0) {
+	_inf.fwrdr = atoi(cp);
+    }
     _inf.init = 0;
     /* here are hijacked system call registration */
     _hijacked_creat = _iomiddle_creat;
@@ -910,6 +975,8 @@ _myhijack_ini2()
     if (cp) {
 	i = atoi(cp);
 	if (i >= 1) {
+	    /* mybuflanes will be checked again in buf_init()
+	     * which will be invoked at the first lseek() or write() call */
 	    _inf.mybuflanes = i;
 	} else {
 	    fprintf(stderr, "IOMIDDLE_LANES must be larger than 0, set it to 1\n");

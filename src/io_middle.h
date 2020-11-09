@@ -20,6 +20,8 @@
 #define DLEVEL_CONFIRM	0x8
 #define DLEVEL_WORKER	0x10
 #define DLEVEL_READ	0x20
+#define DLEVEL_FWRDR	0x40
+#define DLEVEL_RSV1	0x80
 
 #define MODE_UNKNOWN	0
 #define MODE_READ	1
@@ -69,10 +71,15 @@ typedef size_t (*io_cmd)(int, void*, size_t, off64_t);
 
 struct ioinfo {
     int		init;
-    int		debug;
+    int		debug:16,
+		fwrdr:16;
     int		nprocs;
     int		rank;
     int		frank;
+    MPI_Comm	clstr;
+    int		cl_color;
+    int		cl_nprocs;
+    int		cl_rank;
     int		mybuflanes;
     int		mybufcount;
     int		reqtrunc;
@@ -135,6 +142,11 @@ if (_inf.debug) {				\
 #define Myrank 	(_inf.rank)
 #define Frank 	(_inf.frank)
 #define Nprocs 	(_inf.nprocs)
+#define Fwrdr	(_inf.fwrdr)
+#define Clstr	(_inf.clstr)
+#define Color	(_inf.cl_color)
+#define Cprocs	(_inf.cl_nprocs)
+#define Crank	(_inf.cl_rank)
 #define Wenable	(_inf.wrk_enable)
 #define Wenbflg	(_inf.wrk_enblflg)
 #define Wthid	(_inf.wrk_thid)

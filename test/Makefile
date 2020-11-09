@@ -12,6 +12,12 @@ testlib.o: testlib.c testlib.h
 #
 #
 #
+run-test-ioforwarder:
+	rm -f ./results-forwarder/tdata-9
+	(export LD_PRELOAD=../src/io_middle.so; \
+	 export IOMIDDLE_CARE_PATH=./results-forwarder; \
+	 export IOMIDDLE_FORWARDER=3; \
+	$(MPIEXEC) -n 9 ./mytest -l 18 -f ./results-forwarder/tdata-9)
 run-test-all: run-test-write run-test-read
 #
 run-test-write: run-test-gen_ref run-test-simple run-test-multi run-test-rest
