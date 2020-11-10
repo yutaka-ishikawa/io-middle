@@ -144,15 +144,15 @@ rank_init()
     if (Myrank < 0) {
 	MPI_Comm_size(MPI_COMM_WORLD, &Nprocs);
 	MPI_Comm_rank(MPI_COMM_WORLD, &Myrank);
-    }
-    if (Myrank == 0) {
-	char        *cp = getenv("IOMIDDLE_CONFIRM");
-	if (cp && atoi(cp) > 0) {
-	    fprintf(stderr,
-		    "IO-MIDDLE is attached\n"
-		    " CARE_PATH = %s\n"
-		    " IO FORWADER is %s\n",
-		    care_path, Fwrdr == 1 ? "ON" : "OFF"); fflush(stderr);
+	if (Myrank == 0) {
+	    char        *cp = getenv("IOMIDDLE_CONFIRM");
+	    if (cp && atoi(cp) > 0) {
+		fprintf(stderr,
+			"IO-MIDDLE is attached:\n"
+			"CARE_PATH = %s\n"
+			"IO_FORWARDER is %d\n",
+			care_path, Fwrdr); fflush(stderr);
+	    }
 	}
     }
 }

@@ -1,6 +1,6 @@
 #!/bin/sh
 #------ pjsub option --------#
-#PJM -N "IO-MIDDLE-WRITE" # jobname
+#PJM -N "IO-MIDDLE-FORWARDER-WRITE" # jobname
 #PJM -S		# output statistics
 #PJM --spath "results-middle/%n.%j.stat"
 #PJM -o "results-middle/%n.%j.out"
@@ -35,7 +35,7 @@
 #PJM --llio sharedtmp-size=95258Mi
 #PJM --llio localtmp-size=0
 #	PJM --llio cn-cache-size=128Mi
-#	PJM --llio stripe-size=2048Ki
+#PJM --llio stripe-size=2048Ki
 #	PJM --llio async-close=on
 #PJM --llio async-close=off
 #PJM --llio auto-readahead=on
@@ -48,80 +48,61 @@ ls /share
 mkdir /share/data
 ls -l /share
 
-##DDIR=./results-data-middle
-DDIR=/share/data/
+DDIR=/share/data
 #rm -f $DDIR/tdata-*
 
-MPIOPT="-ofout ./results-middle/%n.%j.out -oferr ./results-middle/%n.%j.err"
+MPIOPT="-ofout ./results-middle/%n.%j.out -oferr ./results-middle/xx.err"
 #LEN=3840
 #LEN=11520
 #LEN=4608
 #LEN=2304
-#LEN=1152
-#NP=1152
 
-# 192*1920 = 16 GiB
+# 192*1920 = 16 GiB, FORWARDER:4, 2 MiB
 LEN=1920
 NP=192
 
-echo "########################################################################"
-echo "WITHOUT IO-MIDDLE"
-echo "LD_PRELOAD       = " $LD_PRELOAD
-echo "LD_LIBRARY_PATH  = " $LD_LIBRARY_PATH
-echo "IOMIDDLE_CONFIRM = " $IOMIDDLE_CONFIRM
-echo "IOMIDDLE_WORKER  = " $IOMIDDLE_WORKER
-echo "IOMIDDLE_LANES   = " $IOMIDDLE_LANES
-echo "LEN = " $LEN; echo "NP = " $NP
 
-mpiexec -n $NP $MPIOPT ./mytest -l $LEN -f $DDIR/tdata-$LEN-0
-
-echo
-echo
-echo
-echo "########################################################################"
 export LD_PRELOAD=../src/io_middle.so
 export IOMIDDLE_CONFIRM=1
 export IOMIDDLE_CARE_PATH=$DDIR/
-echo "LD_PRELOAD       = " $LD_PRELOAD
-echo "LD_LIBRARY_PATH  = " $LD_LIBRARY_PATH
-echo "IOMIDDLE_CONFIRM = " $IOMIDDLE_CONFIRM
-echo "IOMIDDLE_WORKER  = " $IOMIDDLE_WORKER
-echo "IOMIDDLE_LANES   = " $IOMIDDLE_LANES
-echo "LEN = " $LEN; echo "NP = " $NP
 
-mpiexec -n $NP $MPIOPT ./mytest -l $LEN -f $DDIR/tdata-$LEN-1
-echo
-echo
-echo
-echo "########################################################################"
-export IOMIDDLE_LANES=4
-echo "LD_PRELOAD       = " $LD_PRELOAD
-echo "LD_LIBRARY_PATH  = " $LD_LIBRARY_PATH
-echo "IOMIDDLE_CONFIRM = " $IOMIDDLE_CONFIRM
-echo "IOMIDDLE_LANES   = " $IOMIDDLE_LANES
-echo "IOMIDDLE_WORKER  = " $IOMIDDLE_WORKER
-echo "LEN = " $LEN; echo "NP = " $NP
+for NF in 2 3 4 6 8 12 24 32 48 64 96; do
+    echo
+    echo
+    echo "########################################################################"
+    unset IOMIDDLE_WORKER
+    export IOMIDDLE_FORWARDER=$NF
+    echo "LD_PRELOAD       = " $LD_PRELOAD
+    echo "LD_LIBRARY_PATH  = " $LD_LIBRARY_PATH
+    echo "IOMIDDLE_CONFIRM = " $IOMIDDLE_CONFIRM
+    echo "IOMIDDLE_FORWARDER  = " $IOMIDDLE_FORWARDER
+    echo "IOMIDDLE_WORKER  = " $IOMIDDLE_WORKER
+    echo "IOMIDDLE_CARE_PATH  = " $IOMIDDLE_CARE_PATH
+    echo "LEN = " $LEN; echo "NP = " $NP
 
-mpiexec -n $NP $MPIOPT ./mytest -l $LEN -f $DDIR/tdata-$LEN-2
+    mpiexec -n $NP $MPIOPT ./mytest -l $LEN -f $DDIR/tdata-forwarder-$LEN-1
+
+    echo
+    echo
+    echo "########################################################################"
+    export IOMIDDLE_FORWARDER=$NF
+    export IOMIDDLE_WORKER=1
+    echo "LD_PRELOAD       = " $LD_PRELOAD
+    echo "LD_LIBRARY_PATH  = " $LD_LIBRARY_PATH
+    echo "IOMIDDLE_CONFIRM = " $IOMIDDLE_CONFIRM
+    echo "IOMIDDLE_FORWARDER  = " $IOMIDDLE_FORWARDER
+    echo "IOMIDDLE_CARE_PATH  = " $IOMIDDLE_CARE_PATH
+    echo "IOMIDDLE_WORKER  = " $IOMIDDLE_WORKER
+    echo "LEN = " $LEN; echo "NP = " $NP
+
+    mpiexec -n $NP $MPIOPT ./mytest -l $LEN -f $DDIR/tdata-forwarder-$LEN-2
+
+    ls -lt $DDIR/tdata-*
+    rm -f $DDIR/tdata-*
+done
 
 echo
 echo
-echo
-echo "########################################################################"
-export IOMIDDLE_WORKER=1
-echo "LD_PRELOAD       = " $LD_PRELOAD
-echo "LD_LIBRARY_PATH  = " $LD_LIBRARY_PATH
-echo "IOMIDDLE_CONFIRM = " $IOMIDDLE_CONFIRM
-echo "IOMIDDLE_LANES   = " $IOMIDDLE_LANES
-echo "IOMIDDLE_WORKER  = " $IOMIDDLE_WORKER
-echo "LEN = " $LEN; echo "NP = " $NP
-
-mpiexec -n $NP $MPIOPT ./mytest -l $LEN -f $DDIR/tdata-$LEN-3
-
-echo
-echo
-echo
-ls -lt $DDIR/tdata-*
 
 exit
 
