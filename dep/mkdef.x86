@@ -3,7 +3,7 @@ LD = ld
 #CFLAGS =  -Wall -O2 -g
 #CFLAGS_SHARED= -Wall -O2 -g -fpic $(FJCFLAGS)
 CFLAGS = -Wall -g
-CFLAGS_SHARED= -Wall -g -fpic $(FJCFLAGS)
+CFLAGS_SHARED= -Wall -g -fpic $(FJCFLAGS) -DSTATISTICS
 LDFLAGS_SHARED= -shared
 
 INCLUDES =

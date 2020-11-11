@@ -2,7 +2,7 @@ CC = fccpx
 LD = ld
 
 CFLAGS = -O2 -g
-CFLAGS_SHARED= -O2 -g -fpic
+CFLAGS_SHARED= -O2 -g -fpic  -DSTATISTICS
 
 #CFLAGS = -Wall -O2 -g -Nclang
 #CFLAGS_SHARED= -Wall -O2 -g -fpic -Nclang

@@ -14,6 +14,20 @@
 #include <mpi.h>
 #include "hooklib.h"
 
+#ifdef STATISTICS
+#include "utf_tsc.h"
+#define TIMER_READ	0
+#define TIMER_WRITE	1
+#define TIMER_OPEN	2
+#define TIMER_CLOSE	3
+#define TIMER_SPLIT	4
+#define TIMER_GATHER	5
+#define TIMER_SCATTER	6
+#define TIMER_MAX	7
+static char *timer_str[TIMER_MAX] = {
+    "Read", "Write", "Open", "Close", "MPI_Split", "MPI_Gather", "MPI_Scatter" };
+#endif /* STATISTICS */
+
 #define DLEVEL_ALL	0x1
 #define DLEVEL_HIJACKED	0x2
 #define DLEVEL_BUFMGR	0x4
@@ -65,13 +79,21 @@ typedef struct fdinfo {
     char	*ubuf;
     char	*sbuf;
     char	*dbuf[2];
+#ifdef STATISTICS
+    uint64_t	io_tm_start;
+    uint64_t	io_time_tot[TIMER_MAX];
+    uint64_t	io_time_max[TIMER_MAX];
+    uint64_t	io_time_min[TIMER_MAX];
+    size_t	io_sz[TIMER_MAX];
+#endif /* STATISTICS */
 } fdinfo;
 
 typedef size_t (*io_cmd)(int, void*, size_t, off64_t);
 
 struct ioinfo {
     int		init;
-    int		debug:16,
+    int		debug:15,
+		tmr:1,
 		fwrdr:16;
     int		nprocs;
     int		rank;
@@ -104,6 +126,9 @@ struct ioinfo {
     int		wrk_sig;
     int		wrk_nfst;	/* not first time to be invoked */
     int		wrk_tiktok;	/* toggle */
+#ifdef STATISTICS
+    uint64_t	tm_hz;
+#endif /* STATISTICS */
 };
 
 #define DEBUG(level)	if (_inf.debug&(level))
@@ -166,3 +191,30 @@ if (_inf.debug) {				\
 #define Wsig	(_inf.wrk_sig)
 #define Wtiktok (_inf.wrk_tiktok)
 #define Wnfst	(_inf.wrk_nfst)
+
+#ifdef STATISTICS
+#define Wtmhz	(_inf.tm_hz)
+
+#define STAT_BEGIN(fd) do {	\
+    if (_inf.tmr) {			       \
+	_inf.fdinfo[fd].io_tm_start = tick_time();	\
+    }							\
+} while(0);
+
+#define STAT_END(fd, type, sz) do {		\
+    if (_inf.tmr) {\
+	uint64_t	tm = tick_time() - _inf.fdinfo[fd].io_tm_start; \
+	_inf.fdinfo[fd].io_time_max[type]				\
+	    = tm > _inf.fdinfo[fd].io_time_max[type] ? tm : _inf.fdinfo[fd].io_time_max[type]; \
+	_inf.fdinfo[fd].io_time_min[type]				\
+	    = tm < _inf.fdinfo[fd].io_time_max[type] ? tm : _inf.fdinfo[fd].io_time_min[type]; \
+	_inf.fdinfo[fd].io_time_tot[type] += tm;			\
+	_inf.fdinfo[fd].io_sz[type] += sz;					\
+    } \
+} while(0);
+#define TIMER_SECOND(t)	((t) != UINT64_MAX ? (double)(t)/(double)Wtmhz : 0)
+#define SIZE_MiB(t)	((double)(t)/(double)(1024*1024))
+#else
+#define STAT_BEGIN(type)
+#define STAT_END(fd, type, sz)
+#endif /* STATISTICS */

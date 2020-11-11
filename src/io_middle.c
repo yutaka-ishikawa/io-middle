@@ -62,6 +62,9 @@ static int	io_setup(io_cmd, int fd, size_t siz, off64_t pos);
 static void	io_write_bufupdate(fdinfo *info);
 static void	io_fin(int fd);
 static size_t	io_issue(io_cmd,  int fd, void *buf, size_t size, off64_t pos);
+#ifdef STATISTICS
+static void	stat_show(fdinfo*);
+#endif /* STATISTICS */
 
 #if 0
 static char	*dont_path[] = {
@@ -188,6 +191,18 @@ info_init(const char *path, int fd, int flags, int mode)
 	abort();
     }
     strcpy(info->path, path);
+#ifdef STATISTICS
+    memset(info->io_time_tot, 0, sizeof(info->io_time_max));
+    memset(info->io_time_max, 0, sizeof(info->io_time_max));
+    memset(info->io_sz, 0, sizeof(info->io_sz));
+    {
+	int	i;
+	for (i = 0; i < TIMER_MAX; i++) {
+	    info->io_time_min[i] = UINT64_MAX;
+	}
+    }
+    Wtmhz = tick_helz(0);
+#endif /* STATISTICS */
 }
 
 /*
@@ -207,7 +222,9 @@ buf_init(int fd, int strsize, int frank)
 	    dbgprintf("%s: Forwarder count must divide proc count exactly\n", __func__);
 	    abort();
 	}
+	STAT_BEGIN(fd);
 	MPI_CALL(MPI_Comm_split(MPI_COMM_WORLD, color, key, &Clstr));
+	STAT_END(fd, TIMER_SPLIT, 0);
 	Color = color;	Crank = key;
 	DEBUG(DLEVEL_FWRDR) {
 	    dbgprintf("%s: Color(%d) Cprocs(%d) Crank(%d)\n", __func__, Color, Cprocs, Crank);
@@ -340,9 +357,11 @@ io_write(int fd, void *buf, size_t size, off64_t pos)
 {
     size_t	sz;
 
+    STAT_BEGIN(fd);
     //sz = pwrite(fd, buf, size, pos);
     __real_lseek64(fd, pos, SEEK_SET);
     sz = __real_write(fd, buf, size);
+    STAT_END(fd, TIMER_WRITE, size);
     if (sz ==  -1ULL || sz < size) {
 	char buf[1024];
 	snprintf(buf, 1024, "%s: fd(%d) size(%ld) pos(%ld) path=%s",
@@ -358,8 +377,10 @@ io_read(int fd, void *buf, size_t size, off64_t pos)
 {
     size_t	sz;
 
+    STAT_BEGIN(fd);
     __real_lseek64(fd, pos, SEEK_SET);
     sz = __real_read(fd, buf, size);
+    STAT_END(fd, TIMER_READ, size);
     DEBUG(DLEVEL_READ) {
 	dbgprintf("%s: READ## fd(%d) pos(%ld), req-size(%ld) read-size(%ld), buf(%p)\n",
 		  __func__, fd, pos, size, sz, buf);
@@ -411,9 +432,11 @@ buf_flush(fdinfo *info, int cls)
 		      __func__, info->bufcount, _inf.mybuflanes);
 	    abort();
 	}
+	STAT_BEGIN(info->iofd);
 	MPI_CALL(MPI_Gather(info->ubuf, strsize, MPI_BYTE,
 			    info->sbuf, strsize, MPI_BYTE,
 			    forwarder, Clstr));
+	STAT_END(info->iofd, TIMER_GATHER, strsize*Cprocs);
 	if (forwarder == Crank) {
 	    size_t	filpos = curb*strsize;
 	    size_t	wlen = strsize*Cprocs;
@@ -443,10 +466,12 @@ buf_flush(fdinfo *info, int cls)
 	    for (i = 0; i < _inf.mybuflanes && j < info->bufcount; i++, j++) {
 		//dbgprintf("%s: j(%d) this_rank(%d) uoff(%d) soff(%d) sbuf(%p)\n",
 		// __func__, j, this_rank, uoff, soff, info->sbuf);
+		STAT_BEGIN(info->iofd);
 		MPI_CALL(
 		    MPI_Gather(info->ubuf + uoff, strsize, MPI_BYTE,
 			       info->sbuf + soff, strsize, MPI_BYTE,
 			       this_rank, MPI_COMM_WORLD));
+		STAT_END(info->iofd, TIMER_GATHER, strsize*Nprocs);
 		uoff += strsize;
 		soff += chunksize;
 		info->filcurb += strcnt;
@@ -549,6 +574,7 @@ _iomiddle_open(const char *path, int flags, ...)
 	}
     } else {
 	int umode, uflags;
+	uint64_t	tm_start;
 
 	if (_inf.init == 0) {
 	    extern void	_myhijack_ini2();
@@ -557,7 +583,10 @@ _iomiddle_open(const char *path, int flags, ...)
 	}
 	umode  = info_flagcheck(mode);
 	uflags = info_flagcheck(flags);
+	tm_start = tick_time();
 	fd = __real_open(path, uflags, umode);
+	_inf.fdinfo[fd].io_tm_start = tm_start;
+	STAT_END(fd, TIMER_OPEN, 0);
     }
     if (fd < 0) goto err;
     if (dont_care) {
@@ -620,15 +649,22 @@ _iomiddle_close(int fd)
 	    if (filpos != info->filpos) {
 		__real_lseek64(info->iofd, filpos, SEEK_SET);
 	    }
+	    STAT_BEGIN(fd);
 	    rc = __real_close(fd);
+	    STAT_END(fd, TIMER_CLOSE, 0);
 	} else {
+	    STAT_BEGIN(fd);
 	    rc = __real_close(fd);
+	    STAT_END(fd, TIMER_CLOSE, 0);
 	    MPI_Reduce(&info->filpos, &filpos, 1, MPI_UNSIGNED_LONG_LONG,
 		       MPI_MAX, 0, MPI_COMM_WORLD);
 	}
     } else {
 	rc = __real_close(fd);
     }
+#ifdef STATISTICS
+    stat_show(info);
+#endif /* STATISTICS */
     info->attrall = 0;
     info->iofd = -1;
     free(info->ubuf);
@@ -777,11 +813,13 @@ _iomiddle_read(int fd, void *buf, size_t len)
 	    for (i = 0; i < _inf.mybuflanes && j < info->bufend; i++, j++) {
 		// dbgprintf("%s: j(%d) i(%d) this_rank(%d) soff(%d) uoff(%d) len(%d)\n",
 		// __func__, j, i, this_rank, soff, uoff, info->strsize);
+		STAT_BEGIN(info->iofd);
 		MPI_CALL(
 		    MPI_Scatter(info->sbuf + soff,
 				info->strsize, MPI_BYTE,
 				info->ubuf + uoff, info->strsize, MPI_BYTE,
 				this_rank, MPI_COMM_WORLD));
+		STAT_END(info->iofd, TIMER_SCATTER, strsize*Nprocs);
 		uoff += info->strsize;
 		soff += chunksize;
 	    }
@@ -942,6 +980,10 @@ _myhijack_init()
     cp = getenv("IOMIDDLE_FORWARDER");
     if (cp && atoi(cp) > 0) {
 	_inf.fwrdr = atoi(cp);
+    }
+    cp = getenv("IOMIDDLE_STAT");
+    if (cp && atoi(cp) > 0) {
+	_inf.tmr = 1;
     }
     _inf.init = 0;
     /* here are hijacked system call registration */
@@ -1284,3 +1326,21 @@ worker_fin()
 	dbgprintf("%s: FIN (%lx).\n", __func__, retval);
     }
 }
+
+#ifdef STATISTICS
+static void
+stat_show(fdinfo *info)
+{
+    int	i;
+
+    if (_inf.tmr == 0 || Crank != 0) return;
+    dbgprintf("**************** STATISTICS [%d] ***********************\n", Color);
+    dbgprintf("name, total time(sec), max time(sec), min time(sec), total data size(MiB)\n");
+    for (i = 0; i < TIMER_MAX; i++) {
+	dbgprintf("%11s, %12.9f, %12.9f, %12.9f, %12.9f\n",
+		  timer_str[i], TIMER_SECOND(info->io_time_tot[i]),
+		  TIMER_SECOND(info->io_time_max[i]), TIMER_SECOND(info->io_time_min[i]),
+		  SIZE_MiB(info->io_sz[i]));
+    }
+}
+#endif /* STATISTICS */
