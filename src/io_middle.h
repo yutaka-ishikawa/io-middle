@@ -92,16 +92,19 @@ typedef size_t (*io_cmd)(int, void*, size_t, off64_t);
 
 struct ioinfo {
     int		init;
-    int		debug:15,
+    unsigned	debug:15,
 		tmr:1,
 		fwrdr:16;
     int		nprocs;
     int		rank;
     int		frank;
-    MPI_Comm	clstr;
+    MPI_Comm	cl_comm;
     int		cl_color;
     int		cl_nprocs;
     int		cl_rank;
+    MPI_Comm	cl_fwcomm;
+    MPI_Group	cl_fwgrp;
+    int		cl_fwrdr;
     int		mybuflanes;
     int		mybufcount;
     int		reqtrunc;
@@ -168,10 +171,13 @@ if (_inf.debug) {				\
 #define Frank 	(_inf.frank)
 #define Nprocs 	(_inf.nprocs)
 #define Fwrdr	(_inf.fwrdr)
-#define Clstr	(_inf.clstr)
+#define Clcomm	(_inf.cl_comm)
 #define Color	(_inf.cl_color)
 #define Cprocs	(_inf.cl_nprocs)
 #define Crank	(_inf.cl_rank)
+#define Cfwcomm	(_inf.cl_fwcomm)
+#define Cfwgrp	(_inf.cl_fwgrp)
+#define Cfwrdr	(_inf.cl_fwrdr)
 #define Wenable	(_inf.wrk_enable)
 #define Wenbflg	(_inf.wrk_enblflg)
 #define Wthid	(_inf.wrk_thid)
