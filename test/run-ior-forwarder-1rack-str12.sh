@@ -4,11 +4,13 @@
 #PJM -L "rscunit=rscunit_ft01"
 #	PJM -L "rscgrp=dvsys-huge"
 #	PJM -L "rscgrp=dvsys-sin"
-#PJM -L "rscgrp=dvsys-mck5"
+#	PJM -L "rscgrp=dvsys-mck5"
+#	PJM -L "rscgrp=dvsys-mck5,jobenv=linux2"
+#PJM -L "rscgrp=dvsys-mck1,jobenv=linux2"
 #	PJM -L "node=4x6x16:strict"
 #	PJM -L "node=192"
-#	PJM -L "node=384"
-#PJM -L "node=12x3x32"
+#PJM -L "node=384"
+#	PJM -L "node=12x3x32"
 #	PJM -L "node=4x3x8:strict"
 #	PJM -L "node=16"
 #PJM -S
@@ -39,44 +41,46 @@ WORK="/share"
 MPIOPT="-of ior-result/%n.%j.out -oferr ior-result/%n.%j.err"
 
 IOR=/home/g9300001/u93027/work/io500/bin/ior
-IOROPT1_1="-C -Q 1 -g -G 27 -k -e -O stoneWallingStatusFile=./result/ior-hard.stonewall_47008 -O stoneWallingWearOut=1 -t 47008 -b 47008 -s 10000 -w -D 30 -a POSIX"
+#IOROPT1_1="-C -Q 1 -g -G 27 -k -e -O stoneWallingStatusFile=./result/ior-hard.stonewall_47008 -O stoneWallingWearOut=1 -t 47008 -b 47008 -s 10000 -w -D 30 -a POSIX"
+IOROPT1_1="-C -Q 1 -g -G 27 -k -e -O stoneWallingStatusFile=./result/ior-hard.stonewall_47008 -O stoneWallingWearOut=1 -t 47008 -b 47008 -s 1000 -w -D 30 -a POSIX"
 
+#NFLIST="96 128 192"
+#NFLIST="2 3 4"
+NFLIST="4 8"
 TEMP=`hostname`.$$
 mkdir -p ${WORK}/${TEMP}
+printenv | grep LLIO
 
-mpiexec ${MPIOPT} ${IOR} ${IOROPT1_1} -o ${WORK}/${TEMP}/file-nomiddle
-
-export LD_PRELOAD=../src/io_middle.so
-export IOMIDDLE_CARE_PATH=/share/${TEMP}/
-export IOMIDDLE_CONFIRM=1
-export IOMIDDLE_FORWARDER=96
-export IOMIDDLE_WORKER=1
-echo "########################################################################"
-echo "LD_PRELOAD       = " $LD_PRELOAD
-echo "LD_LIBRARY_PATH  = " $LD_LIBRARY_PATH
-echo "IOMIDDLE_CONFIRM = " $IOMIDDLE_CONFIRM
-echo "IOMIDDLE_FORWARDER  = " $IOMIDDLE_FORWARDER
-echo "IOMIDDLE_WORKER  = " $IOMIDDLE_WORKER
-echo "IOMIDDLE_CARE_PATH  = " $IOMIDDLE_CARE_PATH
-
-mpiexec ${MPIOPT} ${IOR} ${IOROPT1_1} -o ${WORK}/${TEMP}/file-iomiddle-forwarder-96
+echo "TEST!!!"
+df -h ${WORK}
+#echo "VANILLA IOR"
+#mpiexec ${MPIOPT} ${IOR} ${IOROPT1_1} -o ${WORK}/${TEMP}/file-nomiddle
 
 export LD_PRELOAD=../src/io_middle.so
 export IOMIDDLE_CARE_PATH=/share/${TEMP}/
 export IOMIDDLE_CONFIRM=1
-export IOMIDDLE_FORWARDER=64
 export IOMIDDLE_WORKER=1
-echo "########################################################################"
-echo "LD_PRELOAD       = " $LD_PRELOAD
-echo "LD_LIBRARY_PATH  = " $LD_LIBRARY_PATH
-echo "IOMIDDLE_CONFIRM = " $IOMIDDLE_CONFIRM
-echo "IOMIDDLE_FORWARDER  = " $IOMIDDLE_FORWARDER
-echo "IOMIDDLE_WORKER  = " $IOMIDDLE_WORKER
-echo "IOMIDDLE_CARE_PATH  = " $IOMIDDLE_CARE_PATH
+export IOMIDDLE_STAT=1
+for NF in $NFLIST; do
+	export LD_PRELOAD=../src/io_middle.so
+	export IOMIDDLE_FORWARDER=$NF
+	echo
+	echo
+	echo "########################################################################"
+	echo "LD_PRELOAD       = " $LD_PRELOAD
+	echo "LD_LIBRARY_PATH  = " $LD_LIBRARY_PATH
+	echo "IOMIDDLE_CONFIRM = " $IOMIDDLE_CONFIRM
+	echo "IOMIDDLE_FORWARDER  = " $IOMIDDLE_FORWARDER
+	echo "IOMIDDLE_WORKER  = " $IOMIDDLE_WORKER
+	echo "IOMIDDLE_CARE_PATH  = " $IOMIDDLE_CARE_PATH
 
-mpiexec ${MPIOPT} ${IOR} ${IOROPT1_1} -o ${WORK}/${TEMP}/file-iomiddle-forwarder-64
+	mpiexec ${MPIOPT} ${IOR} ${IOROPT1_1} -o ${WORK}/${TEMP}/file-iomiddle-forwarder-$NF
+	unset LD_PRELOAD
+	ls -lt ${WORK}/${TEMP}/
+	rm -f ${WORK}/${TEMP}/file-iomiddle-forwarder-$NF
+done
 
-unset LD_PRELOAD
-ls -lt ${WORK}/${TEMP}/
-
+echo
+echo #################### Shell Environment ####################
+printenv
 exit

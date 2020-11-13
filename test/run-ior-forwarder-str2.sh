@@ -41,7 +41,8 @@ MPIOPT="-of ior-result/%n.%j.out -oferr ior-result/%n.%j.err"
 IOR=/home/g9300001/u93027/work/io500/bin/ior
 IOROPT1_1="-C -Q 1 -g -G 27 -k -e -O stoneWallingStatusFile=./result/ior-hard.stonewall_47008 -O stoneWallingWearOut=1 -t 47008 -b 47008 -s 10000 -w -D 300 -a POSIX"
 
-NFLIST="32 48 64 96"
+#NFLIST="32 48 64 96"
+NFLIST="2 3 4 6"
 TEMP=`hostname`.$$
 mkdir -p ${WORK}/${TEMP}
 printenv | grep LLIO
@@ -53,6 +54,7 @@ export LD_PRELOAD=../src/io_middle.so
 export IOMIDDLE_CARE_PATH=/share/${TEMP}/
 export IOMIDDLE_CONFIRM=1
 export IOMIDDLE_WORKER=1
+export IOMIDDLE_STAT=2
 for NF in $NFLIST; do
 	export LD_PRELOAD=../src/io_middle.so
 	export IOMIDDLE_FORWARDER=$NF

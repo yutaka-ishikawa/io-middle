@@ -45,7 +45,8 @@ mpiexec ${MPIOPT} ${IOR} ${IOROPT1_1} -o ${WORK}/${TEMP}/file-nomiddle
 export LD_PRELOAD=../src/io_middle.so
 export IOMIDDLE_CARE_PATH=/share/${TEMP}/
 export IOMIDDLE_CONFIRM=1
-export IOMIDDLE_FORWARDER=96
+##export IOMIDDLE_FORWARDER=96
+export IOMIDDLE_FORWARDER=2
 export IOMIDDLE_WORKER=1
 echo "########################################################################"
 echo "LD_PRELOAD       = " $LD_PRELOAD
@@ -60,8 +61,10 @@ mpiexec ${MPIOPT} ${IOR} ${IOROPT1_1} -o ${WORK}/${TEMP}/file-iomiddle-forwarder
 export LD_PRELOAD=../src/io_middle.so
 export IOMIDDLE_CARE_PATH=/share/${TEMP}/
 export IOMIDDLE_CONFIRM=1
-export IOMIDDLE_FORWARDER=64
+#export IOMIDDLE_FORWARDER=64
+export IOMIDDLE_FORWARDER=3
 export IOMIDDLE_WORKER=1
+export IOMIDDLE_STAT=2
 echo "########################################################################"
 echo "LD_PRELOAD       = " $LD_PRELOAD
 echo "LD_LIBRARY_PATH  = " $LD_LIBRARY_PATH

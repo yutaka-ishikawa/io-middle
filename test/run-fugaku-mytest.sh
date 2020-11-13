@@ -19,7 +19,8 @@
 #PJM --mpi "max-proc-per-node=1"
 #PJM -L "elapse=00:30:00"
 #	PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-huge1,jobenv=linux"
-#PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-sin"
+#	PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-sin"
+#PJM -L "rscgrp=dvsys-small"
 #PJM -L proc-core=unlimited
 #export XOS_MMM_L_HPAGE_TYPE=none
 
@@ -36,6 +37,10 @@
 #PJM --llio async-close=off
 #PJM --llio auto-readahead=on
 #	PJM --llio perf
+
+mpiexec ../src/a.out
+
+exit
 
 DDIR=./results-data-middle
 rm -f $DDIR/tdata-*
