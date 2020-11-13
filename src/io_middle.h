@@ -92,8 +92,8 @@ typedef size_t (*io_cmd)(int, void*, size_t, off64_t);
 
 struct ioinfo {
     int		init;
-    unsigned	debug:15,
-		tmr:1,
+    unsigned	debug:12,
+		tmr:4,
 		fwrdr:16;
     int		nprocs;
     int		rank;

@@ -152,10 +152,11 @@ rank_init()
 	    char        *cp = getenv("IOMIDDLE_CONFIRM");
 	    if (cp && atoi(cp) > 0) {
 		fprintf(stderr,
-			"IO-MIDDLE is attached:\n"
+			"IO_MIDDLE is attached:\n"
 			"CARE_PATH = %s\n"
-			"IO_FORWARDER is %d\n",
-			care_path, Fwrdr); fflush(stderr);
+			"IO_FORWARDER is %d\n"
+			"STATISTICS is %d\n",
+			care_path, Fwrdr, _inf.tmr); fflush(stderr);
 	    }
 	}
     }
@@ -216,8 +217,8 @@ buf_init(int fd, int strsize, int frank)
 
     if (Fwrdr) {
 	int	fprocs = Nprocs/Fwrdr;	/* number of members cared by one forwarder */
-	int	color = frank/fprocs;
-	int	key = frank - (color*Fwrdr);
+	int	color  = frank / fprocs;
+	int	key    = frank % fprocs;
 
 	Cprocs = fprocs;
 	if (Cprocs*Fwrdr != Nprocs) {
@@ -228,21 +229,20 @@ buf_init(int fd, int strsize, int frank)
 	MPI_CALL(MPI_Comm_split(MPI_COMM_WORLD, color, key, &Clcomm));
 	STAT_END(fd, TIMER_SPLIT, 0);
 	Color = color;	Crank = key;
-//	DEBUG(DLEVEL_FWRDR) {
+	DEBUG(DLEVEL_FWRDR) {
 	    dbgprintf("%s: Color(%d) Cprocs(%d) Crank(%d)\n", __func__, Color, Cprocs, Crank);
-//	}
+	}
 	{
 	    /* 384, 4 fowarder (96), 0, 96, 192, 288 */
 	    MPI_Group	group;
 	    int	*ranks = malloc(sizeof(int)*Fwrdr);
 	    int	i;
 	    assert (ranks != NULL);
-	    Fwrdr = 0;
 	    for (i = 0; i < Fwrdr; i++) {
 		ranks[i] = fprocs*i;
 		if (ranks[i] == Myrank) {
 		    Cfwrdr = 1;
-		    dbgprintf("%s: Fowarder(%d)\n", __func__, Myrank);
+		    // dbgprintf("%s: Forwarder(%d)\n", __func__, Myrank);
 		}
 	    }
 	    MPI_CALL(MPI_Comm_group(MPI_COMM_WORLD, &group));
@@ -1005,7 +1005,7 @@ _myhijack_init()
     }
     cp = getenv("IOMIDDLE_STAT");
     if (cp && atoi(cp) > 0) {
-	_inf.tmr = 1;
+	_inf.tmr = atoi(cp);
     }
     _inf.init = 0;
     /* here are hijacked system call registration */
@@ -1383,13 +1383,17 @@ stat_show(fdinfo *info)
     if (_inf.tmr == 0) return;
 
     if (Cfwrdr) {
-	fprintf(stderr, "@[%d], **************** STATISTICS (%s) ***********************\n", Myrank, info->path);
-	fprintf(stderr, "@[%d], name, total time(sec), max time(sec), min time(sec), total data size(MiB)\n, Myrank");
-	for (i = 0; i < TIMER_MAX; i++) {
-	    dbgprintf("@[%d], %11s, %12.9f, %12.9f, %12.9f, %12.9f\n", Myrank,
-		      timer_str[i], TIMER_SECOND(info->io_time_tot[i]),
-		      TIMER_SECOND(info->io_time_max[i]), TIMER_SECOND(info->io_time_min[i]),
-		      SIZE_MiB(info->io_sz[i]));
+	if (_inf.tmr == 2) {
+	    fprintf(stderr, "@[%d], **************** STATISTICS (%s) Per Forwarder **************************\n",
+		    Myrank, info->path);
+	    fprintf(stderr, "@[%d], name, total time(sec), max time(sec), min time(sec), total data size(MiB)\n",
+		    Myrank);
+	    for (i = 0; i < TIMER_MAX; i++) {
+		dbgprintf("@[%d], %11s, %12.9f, %12.9f, %12.9f, %12.9f\n", Myrank,
+			  timer_str[i], TIMER_SECOND(info->io_time_tot[i]),
+			  TIMER_SECOND(info->io_time_max[i]), TIMER_SECOND(info->io_time_min[i]),
+			  SIZE_MiB(info->io_sz[i]));
+	    }
 	}
 	memset(tm_tot, 0, sizeof(tm_tot)); memset(tm_max, 0, sizeof(tm_max));
 	memset(tm_min, 0, sizeof(tm_min)); memset(io_sz, 0, sizeof(io_sz));
@@ -1399,7 +1403,7 @@ stat_show(fdinfo *info)
 	MPI_Reduce(info->io_sz, io_sz, TIMER_MAX, MPI_LONG_LONG, MPI_MAX, 0, Cfwcomm);
     }
     if (Myrank == 0) { /* rank 0 must be a forwarder */
-	fprintf(stderr, "@, **************** STATISTICS (%s) ***********************\n", info->path);
+	fprintf(stderr, "@, ************ STATISTICS (%s) Maximum values  of all forwarders *************\n", info->path);
 	fprintf(stderr, "@, name, total time(sec), max time(sec), min time(sec), total data size(MiB)\n");
 	for (i = 0; i < TIMER_MAX; i++) {
 	    dbgprintf("@, %11s, %12.9f, %12.9f, %12.9f, %12.9f\n",
