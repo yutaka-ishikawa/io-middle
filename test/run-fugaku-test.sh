@@ -17,7 +17,7 @@
 #	PJM -L "node=1152"
 #	PJM -L "node=32x18x16:strict"
 #PJM --mpi "max-proc-per-node=1"
-#PJM -L "elapse=00:04:00"
+#PJM -L "elapse=00:02:00"
 #	PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-huge1,jobenv=linux"
 #PJM -L "rscunit=rscunit_ft01,rscgrp=eap-small"
 #PJM -L proc-core=unlimited
@@ -32,7 +32,7 @@ MPIOPT="-ofout ./results-middle/%n.%j.out -oferr ./results-middle/%n.%j.err"
 ##export LD_PRELOAD=../src/io_middle.so
 ##export LD_LIBRARY_PATH=./:$LD_LIBRARY_PATH
 export LD_PRELOAD=./libio_middle.so
-export IOMIDDLE_DEBUG=31
+##export IOMIDDLE_DEBUG=31
 export IOMIDDLE_WORKER=1
 export IOMIDDLE_LANES=4
 export IOMIDDLE_CONFIRM=1

@@ -20,24 +20,10 @@
 #PJM -L "elapse=00:30:00"
 #	PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-huge1,jobenv=linux"
 #	PJM -L "rscgrp=dvsys-mck1,jobenv=linux2"
-#PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-sin"
-#	PJM -L "rscgrp=dvsys-small"
+#	PJM -L "rscunit=rscunit_ft01,rscgrp=dvsys-sin"
+#PJM -L "rscgrp=eap-small"
 #PJM -L proc-core=unlimited
 #export XOS_MMM_L_HPAGE_TYPE=none
-
-#PJM --llio cn-read-cache=off
-#PJM --llio sio-read-cache=off
-#PJM --llio cn-cached-write-size=0
-#	PJM --llio stripe-count=24
-#PJM --llio stripe-count=6
-#PJM --llio sharedtmp-size=95258Mi
-#PJM --llio localtmp-size=0
-#PJM --llio cn-cache-size=128Mi
-#PJM --llio stripe-size=2048Ki
-#	PJM --llio async-close=on
-#PJM --llio async-close=off
-#PJM --llio auto-readahead=on
-#	PJM --llio perf
 
 DDIR=./results-data-middle
 rm -f $DDIR/tdata-*

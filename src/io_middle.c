@@ -22,6 +22,9 @@
  *	IOMIDDLE_WORKER
  *	   -- if specify, asynchronous I/O read/writer is performed 
  *	      by a worker thread.
+ *	IOMIDDLE_STAT
+ *	   -- if specify, statistics are displayed at file closing time.
+ *		1 : one summary, 2 : all forwders's summaries
  *	IOMIDDLE_LANES
  *	   -- Speficfy the number of lanes. One lane is (stripsize * stripe count)
  *	      This is effective if IOMIDDLE_FORWARDER is not specify.
@@ -83,6 +86,37 @@ static char	*dont_path[] = {
     0
 };
 #endif
+
+#define NODE_UNKNOWN	0
+#define NODE_CN		1
+#define NODE_SIO	2
+#define NODE_BIO	3
+#define NODE_GIO	4
+static char *node_tpstring[] = { "UNKNOWN", "CN", "SIO", "BIO", "GIO" };
+static uint8_t
+node_type(char const **bf)
+{
+    uint8_t	typ;
+    char	host[256];
+    memset(host, 0, 256);
+    gethostname(host, 255);
+    switch(host[strlen(host) - 1]) {
+    case 'c':
+	typ = NODE_CN; break;
+    case 's':
+	typ = NODE_SIO; break;
+    case 'b':
+	typ = NODE_BIO; break;
+    case 'g':
+	typ = NODE_GIO; break;
+    default:
+	typ = NODE_UNKNOWN; break;
+    }
+    if (bf) {
+	*bf = node_tpstring[typ];
+    }
+    return typ;
+}
 
 static char dbgbuf[1024];
 static int
@@ -230,25 +264,44 @@ buf_init(int fd, int strsize, int frank)
 	STAT_END(fd, TIMER_SPLIT, 0);
 	Color = color;	Crank = key;
 	DEBUG(DLEVEL_FWRDR) {
-	    dbgprintf("%s: Color(%d) Cprocs(%d) Crank(%d)\n", __func__, Color, Cprocs, Crank);
+	    char	const *bf = NULL;
+	    int		nt = node_type(&bf);
+	    dbgprintf("%s: Color(%d) Cprocs(%d) Crank(%d) Host(%s) nt(%d)\n", __func__, Color, Cprocs, Crank, bf, nt);
 	}
-	{
-	    /* 384, 4 fowarder (96), 0, 96, 192, 288 */
+	{ /* Determin forwarder and its Communicator for collecting statistics 4 fowarder (96), 0, 96, 192, 288 */
 	    MPI_Group	group;
-	    int	*ranks = malloc(sizeof(int)*Fwrdr);
-	    int	i;
-	    assert (ranks != NULL);
+	    int		i, j, cl_start;
+	    int		nt = node_type(0);
+	    int		*allnt = malloc(sizeof(int)*Nprocs);
+	    int		*ranks = malloc(sizeof(int)*Fwrdr);
+	    assert(allnt != NULL);
+	    assert(ranks != NULL);
+
+	    memset(allnt, 0, sizeof(uint8_t)*Nprocs);
+	    MPI_CALL(MPI_Allgather(&nt, 1, MPI_INT, allnt, 1, MPI_INT, MPI_COMM_WORLD));
+	    /* The first SIO is the forwarder of this cluster */
 	    for (i = 0; i < Fwrdr; i++) {
-		ranks[i] = fprocs*i;
-		if (ranks[i] == Myrank) {
-		    Cfwrdr = 1;
-		    // dbgprintf("%s: Forwarder(%d)\n", __func__, Myrank);
+		cl_start = fprocs*i;
+		for (j = 0; j < fprocs; j++) {
+		    if (allnt[cl_start + j] == NODE_SIO) goto find;
+		}
+		/* no SIO participates in this cluster starting cl_start */
+		j = 0;
+	    find:
+		ranks[i] = cl_start + j; /* COMM_WORLD RANK */
+		if (i == color) { /* My color */
+		    Cfwrdr = j;
+		    DEBUG(DLEVEL_FWRDR) {
+			dbgprintf("%s: Color(%d) Forwarder(%d:%d) Myrank(%d) Crank(%d)\n",
+				  __func__, Color, cl_start + j, Cfwrdr, Myrank, Crank);
+		    }
 		}
 	    }
 	    MPI_CALL(MPI_Comm_group(MPI_COMM_WORLD, &group));
 	    MPI_CALL(MPI_Group_incl(group, Fwrdr, ranks, &Cfwgrp));
 	    MPI_CALL(MPI_Comm_create(MPI_COMM_WORLD, Cfwgrp, &Cfwcomm));
 	    free(ranks);
+	    free(allnt);
 	}
 
 	if (_inf.mybuflanes != 1) {
@@ -448,21 +501,27 @@ buf_flush(fdinfo *info, int cls)
 
     if (info->dirty == 0) { /* no need to flush */ return 0; }
     if (Fwrdr) { /* IO forwarders only get data */
-	int	forwarder = 0;
 	if (info->bufcount != 1 && _inf.mybuflanes != 1) {
 	    dbgprintf("%s: bufcount(%d) and mybuflanes(%d) must be 1\n",
 		      __func__, info->bufcount, _inf.mybuflanes);
 	    abort();
 	}
+	DEBUG(DLEVEL_FWRDR) {
+	    dbgprintf("%s: Color(%d) Cfwrdr(%d) Crank(%d) Cprocs(%d)\n", __func__, Color, Cfwrdr, Crank, Cprocs);
+	}
 	STAT_BEGIN(info->iofd);
+	/* Cfwrdr must collect data */
 	MPI_CALL(MPI_Gather(info->ubuf, strsize, MPI_BYTE,
 			    info->sbuf, strsize, MPI_BYTE,
-			    forwarder, Clcomm));
+			    Cfwrdr, Clcomm));
 	STAT_END(info->iofd, TIMER_GATHER, strsize*Cprocs);
-	if (forwarder == Crank) {
+
+	if (Cfwrdr == Crank) {
 	    size_t	filpos = curb*strsize;
 	    size_t	wlen = strsize*Cprocs;
-	    // dbgprintf("%s: WRITE curb(%d) filpos(%ld) wlen(%ld)\n", __func__, curb, filpos, wlen);
+	    DEBUG(DLEVEL_FWRDR) {
+		dbgprintf("%s: WRITE curb(%d) filpos(%ld) wlen(%ld)\n", __func__, curb, filpos, wlen);
+	    }
 	    sz = io_issue(WRK_CMD_WRITE, info->iofd, info->sbuf, wlen, filpos);
 	    if (sz == 0 || sz == wlen) { /* first io_issue is always zero */
 		cc = strsize;
@@ -682,7 +741,9 @@ _iomiddle_close(int fd)
 		       MPI_MAX, 0, MPI_COMM_WORLD);
 	}
     } else {
+	STAT_BEGIN(fd);
 	rc = __real_close(fd);
+	STAT_END(fd, TIMER_CLOSE, 0);
     }
 #ifdef STATISTICS
     stat_show(info);
@@ -1382,10 +1443,12 @@ stat_show(fdinfo *info)
 
     if (_inf.tmr == 0) return;
 
-    if (Cfwrdr) {
+    if (Cfwrdr == Crank) {
 	if (_inf.tmr == 2) {
-	    fprintf(stderr, "@[%d], **************** STATISTICS (%s) Per Forwarder **************************\n",
-		    Myrank, info->path);
+	    char	host[256];
+	    memset(host, 0, 256); gethostname(host, 255);
+	    fprintf(stderr, "@[%d], **************** STATISTICS (%s) Per Forwarder host(%s) ****************\n",
+		    Myrank, info->path, host);
 	    fprintf(stderr, "@[%d], name, total time(sec), max time(sec), min time(sec), total data size(MiB)\n",
 		    Myrank);
 	    for (i = 0; i < TIMER_MAX; i++) {
@@ -1401,14 +1464,14 @@ stat_show(fdinfo *info)
 	MPI_Reduce(info->io_time_max, tm_max, TIMER_MAX, MPI_LONG_LONG, MPI_MAX, 0, Cfwcomm);
 	MPI_Reduce(info->io_time_min, tm_min, TIMER_MAX, MPI_LONG_LONG, MPI_MAX, 0, Cfwcomm);
 	MPI_Reduce(info->io_sz, io_sz, TIMER_MAX, MPI_LONG_LONG, MPI_MAX, 0, Cfwcomm);
-    }
-    if (Myrank == 0) { /* rank 0 must be a forwarder */
-	fprintf(stderr, "@, ************ STATISTICS (%s) Maximum values  of all forwarders *************\n", info->path);
-	fprintf(stderr, "@, name, total time(sec), max time(sec), min time(sec), total data size(MiB)\n");
-	for (i = 0; i < TIMER_MAX; i++) {
-	    dbgprintf("@, %11s, %12.9f, %12.9f, %12.9f, %12.9f\n",
-		      timer_str[i], TIMER_SECOND(tm_tot[i]),
-		      TIMER_SECOND(tm_max[i]), TIMER_SECOND(tm_min[i]), SIZE_MiB(io_sz[i]));
+	if (Color == 0) { /* rank 0 must be a forwarder */
+	    fprintf(stderr, "@, ************ STATISTICS (%s) Maximum values  of all forwarders *************\n", info->path);
+	    fprintf(stderr, "@, name, total time(sec), max time(sec), min time(sec), total data size(MiB)\n");
+	    for (i = 0; i < TIMER_MAX; i++) {
+		dbgprintf("@, %11s, %12.9f, %12.9f, %12.9f, %12.9f\n",
+			  timer_str[i], TIMER_SECOND(tm_tot[i]),
+			  TIMER_SECOND(tm_max[i]), TIMER_SECOND(tm_min[i]), SIZE_MiB(io_sz[i]));
+	    }
 	}
     }
 #if 0
