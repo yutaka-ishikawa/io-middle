@@ -1,5 +1,5 @@
 #!/bin/bash
-#PJM -N "IOR-FWDR-3rack-str12-1024Ki" # jobname
+#PJM -N "IOR-FWDR-6rack-str48-1024Ki" # jobname
 #PJM -L "elapse=00:40:00"
 #PJM -L "rscunit=rscunit_ft01"
 #	PJM -L "node=4x6x16:strict"
@@ -9,9 +9,7 @@
 #	PJM -L "rscgrp=dvsys-mck5,jobenv=linux2"
 #	PJM -L "rscgrp=dvsys-mck1,jobenv=linux2"
 #PJM -L "rscgrp=eap-llio"
-#	PJM -L "node=6x12x16:strict"
-#	PJM -L "node=12x6x16:strict"
-#PJM -L "node=4x6x48:strict"
+#PJM -L "node=8x6x48:strict"
 #	PJM -L "node=192"
 #	PJM -L "node=384"
 #	PJM -L "node=12x3x32"
@@ -32,7 +30,8 @@
 #PJM --llio cn-cached-write-size=0
 #	PJM --llio stripe-count=24
 #	PJM --llio stripe-count=6
-#PJM --llio stripe-count=12
+#	PJM --llio stripe-count=12
+#PJM --llio stripe-count=48
 #	PJM --llio sharedtmp-size=95258Mi
 #PJM --llio sharedtmp-size=89278Mi
 #PJM --llio localtmp-size=0
@@ -55,7 +54,7 @@ IOROPT1_1="-C -Q 1 -g -G 27 -k -e -O stoneWallingStatusFile=./result/ior-hard.st
 #NFLIST="96 128 192 288 384"
 #NFLIST="6 9 12 16 24 72"
 #NFLIST="2 3 4 6 9 12 16 24"
-NFLIST="2 3 4 6"
+NFLIST="3 4 6 8"
 TEMP=`hostname`.$$
 mkdir -p ${WORK}/${TEMP}
 printenv | grep LLIO

@@ -19,6 +19,9 @@
  *	IOMIDDLE_FORWARDER
  *	   -- Number of IO forwarders. The number must divide proccess count without remainder.
  *	     If not specify, all proccesses are IO forwarders.
+ *	IOMIDDLE_FORWARDER_NODE
+ *	   -- speicy the type of compute node for forwarder.
+ *	      0: Storage & Compute Node (NODE_SIO), 1: Compute Node (NODE_CN)
  *	IOMIDDLE_WORKER
  *	   -- if specify, asynchronous I/O read/writer is performed 
  *	      by a worker thread.
@@ -188,9 +191,11 @@ rank_init()
 		fprintf(stderr,
 			"IO_MIDDLE is attached:\n"
 			"CARE_PATH = %s\n"
-			"IO_FORWARDER is %d\n"
+			"IO_FORWARDER is %d on %s\n"
 			"STATISTICS is %d\n",
-			care_path, Fwrdr, _inf.tmr); fflush(stderr);
+			care_path, Fwrdr,
+			Fntyp == NODE_CN ? "NODE_CN" : "NODE_SIO",
+			_inf.tmr); fflush(stderr);
 	    }
 	}
     }
@@ -279,11 +284,17 @@ buf_init(int fd, int strsize, int frank)
 
 	    memset(allnt, 0, sizeof(uint8_t)*Nprocs);
 	    MPI_CALL(MPI_Allgather(&nt, 1, MPI_INT, allnt, 1, MPI_INT, MPI_COMM_WORLD));
-	    /* The first SIO is the forwarder of this cluster */
+#ifdef STATISTICS
+	    Nsio = 0;
+	    for (i = 0; i < Nprocs; i++) {
+		if (allnt[i] == NODE_SIO) Nsio++;
+	    }
+#endif /* STATISTICS */
+	    /* The first SIO or CN is the forwarder of this cluster */
 	    for (i = 0; i < Fwrdr; i++) {
 		cl_start = fprocs*i;
 		for (j = 0; j < fprocs; j++) {
-		    if (allnt[cl_start + j] == NODE_SIO) goto find;
+		    if (allnt[cl_start + j] == Fntyp) goto find;
 		}
 		/* no SIO participates in this cluster starting cl_start */
 		j = 0;
@@ -1064,6 +1075,12 @@ _myhijack_init()
     if (cp && atoi(cp) > 0) {
 	_inf.fwrdr = atoi(cp);
     }
+    cp = getenv("IOMIDDLE_FORWARDER_NODE");
+    if (cp && atoi(cp) == 1) {
+	_inf.fntyp = NODE_CN;
+    } else {
+	_inf.fntyp = NODE_SIO;
+    }
     cp = getenv("IOMIDDLE_STAT");
     if (cp && atoi(cp) > 0) {
 	_inf.tmr = atoi(cp);
@@ -1464,8 +1481,8 @@ stat_show(fdinfo *info)
 	MPI_Reduce(info->io_time_max, tm_max, TIMER_MAX, MPI_LONG_LONG, MPI_MAX, 0, Cfwcomm);
 	MPI_Reduce(info->io_time_min, tm_min, TIMER_MAX, MPI_LONG_LONG, MPI_MAX, 0, Cfwcomm);
 	MPI_Reduce(info->io_sz, io_sz, TIMER_MAX, MPI_LONG_LONG, MPI_MAX, 0, Cfwcomm);
-	if (Color == 0) { /* rank 0 must be a forwarder */
-	    fprintf(stderr, "@, ************ STATISTICS (%s) Maximum values  of all forwarders *************\n", info->path);
+	if (Color == 0) {
+	    fprintf(stderr, "@, ************ STATISTICS (%s) Maximum values of all forwarders #SIO(%d) *************\n", info->path, Nsio);
 	    fprintf(stderr, "@, name, total time(sec), max time(sec), min time(sec), total data size(MiB)\n");
 	    for (i = 0; i < TIMER_MAX; i++) {
 		dbgprintf("@, %11s, %12.9f, %12.9f, %12.9f, %12.9f\n",

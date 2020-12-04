@@ -94,7 +94,8 @@ struct ioinfo {
     int		init;
     unsigned	debug:12,
 		tmr:4,
-		fwrdr:16;
+		fntyp:2,	/* node type for forwarders */
+		fwrdr:14;	/* number of forwarders */
     int		nprocs;
     int		rank;
     int		frank;
@@ -131,6 +132,7 @@ struct ioinfo {
     int		wrk_tiktok;	/* toggle */
 #ifdef STATISTICS
     uint64_t	tm_hz;
+    int		nsio;
 #endif /* STATISTICS */
 };
 
@@ -171,6 +173,7 @@ if (_inf.debug) {				\
 #define Frank 	(_inf.frank)
 #define Nprocs 	(_inf.nprocs)
 #define Fwrdr	(_inf.fwrdr)
+#define Fntyp	(_inf.fntyp)
 #define Clcomm	(_inf.cl_comm)
 #define Color	(_inf.cl_color)
 #define Cprocs	(_inf.cl_nprocs)
@@ -200,6 +203,7 @@ if (_inf.debug) {				\
 
 #ifdef STATISTICS
 #define Wtmhz	(_inf.tm_hz)
+#define Nsio	(_inf.nsio)
 
 #define STAT_BEGIN(fd) do {	\
     if (_inf.tmr) {			       \

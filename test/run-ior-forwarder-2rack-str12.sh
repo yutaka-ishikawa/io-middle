@@ -5,16 +5,18 @@
 #	PJM -L "rscgrp=dvsys-huge"
 #	PJM -L "rscgrp=dvsys-sin"
 #	PJM -L "rscgrp=dvsys-mck5"
-#PJM -L "rscgrp=dvsys-mck5,jobenv=linux2"
+#	PJM -L "rscgrp=dvsys-mck5,jobenv=linux2"
 #	PJM -L "rscgrp=dvsys-mck1,jobenv=linux2"
 #	PJM -L "node=4x6x16:strict"
 #	PJM -L "node=192"
 #	PJM -L "node=384"
-#PJM -L "node=768"
+#	PJM -L "node=768"
 #	PJM -L "node=12x3x32"
 #	PJM -L "node=1152"
 #	PJM -L "node=4x3x8:strict"
 #	PJM -L "node=16"
+#PJM -L "rscgrp=eap-llio"
+#PJM -L "node=4x12x16:strict"
 #PJM -S
 #PJM -o 'ior-result/%n.%j.out'
 #PJM -e 'ior-result/%n.%j.err'
